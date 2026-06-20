@@ -6,6 +6,10 @@ on:
   push:
     branches: [main, develop]
 
+permissions:
+  id-token: write
+  contents: write
+
 jobs:
   gitleaks:
     name: Secret Scan
