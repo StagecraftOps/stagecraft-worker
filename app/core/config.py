@@ -7,7 +7,7 @@ class Settings(BaseSettings):
 
     AWS_REGION: str = "us-east-1"
     SQS_QUEUE_URL: str = "https://sqs.us-east-1.amazonaws.com/123456789/agora-webhooks"
-    BEDROCK_MODEL_ID: str = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+    BEDROCK_MODEL_ID: str = "amazon.nova-pro-v1:0"
 
     GITHUB_TOKEN: str = ""
 
@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     SECRET_KEY: str = INSECURE_DEFAULT_SECRET
     TOKEN_ENCRYPTION_KEY: str = ""
 
-    USE_MULTI_AGENT: bool = False
+    USE_MULTI_AGENT: bool = True
 
     BEDROCK_AGENT_ID_CLASSIFIER: str = ""
     BEDROCK_AGENT_ID_ROOT_CAUSE: str = ""

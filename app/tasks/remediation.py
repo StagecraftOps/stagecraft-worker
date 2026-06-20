@@ -284,6 +284,7 @@ def process_failed_workflow(self, message: dict) -> dict:
 
         from app.agents.scrubber import scrub
         scrubbed_logs = scrub(logs)
+        workflow_yaml = scrub(workflow_yaml)
 
         if settings.USE_MULTI_AGENT:
             logger.info("Running multi-agent LangGraph pipeline for run %s", run_id)
@@ -294,6 +295,8 @@ def process_failed_workflow(self, message: dict) -> dict:
                 "workflow_file": workflow_file,
                 "workflow_yaml": workflow_yaml,
                 "logs": scrubbed_logs,
+                "head_sha": head_sha,
+                "github_token": github_token,
                 "agent_trace": [],
             })
             if final_state.get("error"):
@@ -301,7 +304,12 @@ def process_failed_workflow(self, message: dict) -> dict:
             root_cause = final_state.get("root_cause", "")
             suggested_yaml = final_state.get("suggested_yaml")
             pr_title = final_state.get("pr_title", "")
-            logger.info("Multi-agent trace: %s", final_state.get("agent_trace", []))
+            logger.info(
+                "Multi-agent trace: %s | pr_title: %s | security_risk: %s",
+                final_state.get("agent_trace", []),
+                pr_title,
+                final_state.get("security_risk_score"),
+            )
         else:
             logger.info("Invoking Bedrock (single-agent) for run %s", run_id)
             bedrock = BedrockRemediationClient()

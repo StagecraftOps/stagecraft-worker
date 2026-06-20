@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 
 import boto3
@@ -9,20 +10,30 @@ from app.agents.state import AgentState
 
 logger = logging.getLogger(__name__)
 
+_bedrock_agent_client = boto3.client("bedrock-agent-runtime", region_name=settings.AWS_REGION)
+
+_MAX_RETRIES = 2
+
 
 def _invoke_bedrock_agent(agent_alias_id: str, session_id: str, prompt: str) -> str:
-    client = boto3.client("bedrock-agent-runtime", region_name=settings.AWS_REGION)
-    response = client.invoke_agent(
-        agentId=settings.BEDROCK_AGENT_IDS.get(agent_alias_id, ""),
-        agentAliasId=settings.BEDROCK_AGENT_ALIAS_IDS.get(agent_alias_id, "TSTALIASID"),
-        sessionId=session_id,
-        inputText=prompt,
-    )
-    completion = ""
-    for event in response["completion"]:
-        if "chunk" in event:
-            completion += event["chunk"]["bytes"].decode()
-    return completion.strip()
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            response = _bedrock_agent_client.invoke_agent(
+                agentId=settings.BEDROCK_AGENT_IDS.get(agent_alias_id, ""),
+                agentAliasId=settings.BEDROCK_AGENT_ALIAS_IDS.get(agent_alias_id, "TSTALIASID"),
+                sessionId=session_id,
+                inputText=prompt,
+            )
+            completion = ""
+            for event in response["completion"]:
+                if "chunk" in event:
+                    completion += event["chunk"]["bytes"].decode()
+            return completion.strip()
+        except _bedrock_agent_client.exceptions.ThrottlingException:
+            if attempt < _MAX_RETRIES:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise
 
 
 def classify_failure(state: AgentState) -> AgentState:

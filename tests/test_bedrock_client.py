@@ -8,11 +8,8 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("SECRET_KEY", "test-secret-only")
 
 def _make_bedrock_response(content: str) -> dict:
-    """Build a mock Bedrock SDK response dict with the given content text."""
-    body_bytes = json.dumps({"content": [{"text": content}]}).encode()
-    mock_body = MagicMock()
-    mock_body.read.return_value = body_bytes
-    return {"body": mock_body}
+    """Build a mock Bedrock Converse API response dict with the given content text."""
+    return {"output": {"message": {"content": [{"text": content}]}}}
 
 @patch("boto3.client")
 def test_valid_json_response_parsed(mock_boto):
@@ -26,7 +23,7 @@ def test_valid_json_response_parsed(mock_boto):
     })
 
     mock_client = MagicMock()
-    mock_client.invoke_model.return_value = _make_bedrock_response(good_response)
+    mock_client.converse.return_value = _make_bedrock_response(good_response)
     mock_client.exceptions.ThrottlingException = Exception
     mock_boto.return_value = mock_client
 
@@ -49,7 +46,7 @@ def test_markdown_fenced_json_parsed(mock_boto):
     }) + "\n```"
 
     mock_client = MagicMock()
-    mock_client.invoke_model.return_value = _make_bedrock_response(wrapped)
+    mock_client.converse.return_value = _make_bedrock_response(wrapped)
     mock_client.exceptions.ThrottlingException = Exception
     mock_boto.return_value = mock_client
 
@@ -65,7 +62,7 @@ def test_missing_required_key_raises(mock_boto):
     partial = json.dumps({"root_cause": "r", "fixed_yaml": "y"})
 
     mock_client = MagicMock()
-    mock_client.invoke_model.return_value = _make_bedrock_response(partial)
+    mock_client.converse.return_value = _make_bedrock_response(partial)
     mock_client.exceptions.ThrottlingException = Exception
     mock_boto.return_value = mock_client
 
@@ -79,7 +76,7 @@ def test_invalid_json_raises(mock_boto):
     from app.services.bedrock_client import BedrockRemediationClient
 
     mock_client = MagicMock()
-    mock_client.invoke_model.return_value = _make_bedrock_response("not json at all")
+    mock_client.converse.return_value = _make_bedrock_response("not json at all")
     mock_client.exceptions.ThrottlingException = Exception
     mock_boto.return_value = mock_client
 

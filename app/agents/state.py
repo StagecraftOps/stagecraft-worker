@@ -8,6 +8,8 @@ class AgentState(TypedDict, total=False):
     workflow_file: str
     workflow_yaml: str
     logs: str
+    head_sha: str
+    github_token: str
     failure_category: str
     root_cause: str
     root_cause_severity: str
