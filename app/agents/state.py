@@ -9,6 +9,7 @@ class AgentState(TypedDict, total=False):
     workflow_yaml: str
     logs: str
     head_sha: str
+    run_id: int          # GitHub Actions run id — used by root_cause's get_run_logs tool
     github_token: str
     failure_category: str
     root_cause: str

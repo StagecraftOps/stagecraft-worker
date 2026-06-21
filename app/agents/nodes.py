@@ -1,8 +1,8 @@
 import asyncio
 import json
 import logging
+import re
 import time
-import uuid
 
 import boto3
 import yaml
@@ -15,46 +15,118 @@ from app.services.bedrock_client import _bedrock_boto3_kwargs
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIES = 2
-_MAX_ROC_ROUNDS = 6
+_MAX_TOOL_ROUNDS = 4
 
-# Read-only GitHub tools exposed to agents need the user's OAuth token
-# injected — the Bedrock action group schema has no notion of "current user".
-# Write tools (branch/commit/PR) are deliberately NOT exposed to any agent:
-# the worker is read-only with respect to GitHub by design (see
-# tasks/remediation.py) so a prompt-injected log can at worst produce a bad
-# suggestion, never an autonomous write to the user's repo.
-_GITHUB_TOOLS = {
-    "get_workflow_yaml",
-    "get_run_logs",
+# Read-only GitHub MCP tools the root_cause step may call (via Converse tool
+# use) to pull extra context. The worker injects the user's github_token; the
+# model never sees it. Write tools (branch/commit/PR) are deliberately absent —
+# the worker is read-only w.r.t. GitHub (writes happen only via the api-service
+# Raise-PR flow after human review).
+_GITHUB_TOOLS = {"get_workflow_yaml", "get_run_logs"}
+
+_ROOT_CAUSE_TOOLCONFIG = {
+    "tools": [
+        {
+            "toolSpec": {
+                "name": "get_run_logs",
+                "description": (
+                    "Download the last 300 lines of logs for a GitHub Actions workflow run. "
+                    "Call this when the truncated logs provided aren't enough to pinpoint the cause."
+                ),
+                "inputSchema": {"json": {
+                    "type": "object",
+                    "properties": {
+                        "owner": {"type": "string", "description": "Repository owner/org"},
+                        "repo": {"type": "string", "description": "Repository name"},
+                        "run_id": {"type": "integer", "description": "Workflow run ID"},
+                    },
+                    "required": ["owner", "repo", "run_id"],
+                }},
+            }
+        },
+        {
+            "toolSpec": {
+                "name": "get_workflow_yaml",
+                "description": "Fetch a workflow YAML file from the repo at a git ref. Use to inspect a referenced or related workflow file.",
+                "inputSchema": {"json": {
+                    "type": "object",
+                    "properties": {
+                        "owner": {"type": "string"},
+                        "repo": {"type": "string"},
+                        "path": {"type": "string", "description": "Path under .github/workflows/"},
+                        "ref": {"type": "string", "description": "Git ref (branch, tag, or commit SHA)"},
+                    },
+                    "required": ["owner", "repo", "path", "ref"],
+                }},
+            }
+        },
+    ]
 }
 
 
-def _invoke_bedrock_agent(agent_key: str, session_id: str, prompt: str, github_token: str | None = None) -> str:
-    """Invoke a Bedrock agent, resolving any Return-of-Control tool calls via MCP.
+def _bedrock_runtime():
+    """A fresh bedrock-runtime client (cross-account creds are minted per call)."""
+    return boto3.client("bedrock-runtime", region_name=settings.AWS_REGION, **_bedrock_boto3_kwargs())
 
-    The agent may stream a `returnControl` event instead of a final completion when
-    its action group decides a tool needs to run. We execute that tool against the
-    in-cluster MCP server and re-invoke the agent with the result, looping until the
-    agent returns a normal completion.
+
+def _parse_json(raw: str) -> dict | None:
+    """Best-effort: pull the first JSON object out of a model response."""
+    candidates = [raw]
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        candidates.append(m.group(0))
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+            if isinstance(value, dict):
+                return value
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _converse(prompt: str, max_tokens: int = 1024) -> str:
+    """Single-shot Bedrock Converse (InvokeModel) call. Returns the model's text.
+
+    Replaces the SCP-blocked InvokeAgent path — same role-specialized prompting,
+    just a direct model call. Used by classify / security / pr_writer.
     """
-    client = boto3.client(
-        "bedrock-agent-runtime",
-        region_name=settings.AWS_REGION,
-        **_bedrock_boto3_kwargs(),
-    )
-    agent_id = settings.BEDROCK_AGENT_IDS.get(agent_key, "")
-    agent_alias_id = settings.BEDROCK_AGENT_ALIAS_IDS.get(agent_key, "TSTALIASID")
+    client = _bedrock_runtime()
+    for attempt in range(_MAX_RETRIES + 1):
+        try:
+            resp = client.converse(
+                modelId=settings.BEDROCK_MODEL_ID,
+                messages=[{"role": "user", "content": [{"text": prompt}]}],
+                inferenceConfig={"maxTokens": max_tokens, "temperature": 0},
+            )
+            return resp["output"]["message"]["content"][0]["text"].strip()
+        except client.exceptions.ThrottlingException:
+            if attempt < _MAX_RETRIES:
+                time.sleep(2 ** (attempt + 1))
+                continue
+            raise
+    return ""
 
-    session_state: dict | None = None
-    for _round in range(_MAX_ROC_ROUNDS):
+
+def _converse_with_tools(prompt: str, toolconfig: dict, tool_executor, max_rounds: int = _MAX_TOOL_ROUNDS) -> str:
+    """Converse with native tool use: model -> (toolUse -> execute -> toolResult) -> ... -> final text.
+
+    `tool_executor(name, input_dict) -> str` bridges the model's tool calls to
+    the in-cluster MCP servers. Runs entirely on InvokeModel (SCP-allowed) — the
+    same agentic loop the Bedrock-Agents Return-of-Control path did, but via the
+    portable Converse tool-use API instead.
+    """
+    client = _bedrock_runtime()
+    messages = [{"role": "user", "content": [{"text": prompt}]}]
+    for _ in range(max_rounds):
         for attempt in range(_MAX_RETRIES + 1):
             try:
-                kwargs = {"agentId": agent_id, "agentAliasId": agent_alias_id, "sessionId": session_id}
-                if session_state is not None:
-                    kwargs["sessionState"] = session_state
-                else:
-                    kwargs["inputText"] = prompt
-                response = client.invoke_agent(**kwargs)
+                resp = client.converse(
+                    modelId=settings.BEDROCK_MODEL_ID,
+                    messages=messages,
+                    toolConfig=toolconfig,
+                    inferenceConfig={"maxTokens": 2048, "temperature": 0},
+                )
                 break
             except client.exceptions.ThrottlingException:
                 if attempt < _MAX_RETRIES:
@@ -62,83 +134,83 @@ def _invoke_bedrock_agent(agent_key: str, session_id: str, prompt: str, github_t
                     continue
                 raise
 
-        completion = ""
-        return_control = None
-        for event in response["completion"]:
-            if "chunk" in event:
-                completion += event["chunk"]["bytes"].decode()
-            elif "returnControl" in event:
-                return_control = event["returnControl"]
+        out_msg = resp["output"]["message"]
+        messages.append(out_msg)
 
-        if return_control is None:
-            return completion.strip()
+        if resp.get("stopReason") == "tool_use":
+            tool_results = []
+            for block in out_msg.get("content", []):
+                tu = block.get("toolUse")
+                if not tu:
+                    continue
+                try:
+                    result = tool_executor(tu["name"], tu.get("input", {}))
+                except Exception as exc:
+                    logger.warning("MCP tool %s failed: %s", tu.get("name"), exc)
+                    result = f"ERROR: {exc}"
+                tool_results.append({
+                    "toolResult": {"toolUseId": tu["toolUseId"], "content": [{"text": str(result)[:6000]}]}
+                })
+            messages.append({"role": "user", "content": tool_results})
+            continue
 
-        results = []
-        for invocation_input in return_control["invocationInputs"]:
-            func_input = invocation_input["functionInvocationInput"]
-            function_name = func_input["function"]
-            action_group = func_input["actionGroup"]
-            params = {p["name"]: p["value"] for p in func_input.get("parameters", [])}
-            if github_token and function_name in _GITHUB_TOOLS:
-                params["github_token"] = github_token
+        return "".join(b.get("text", "") for b in out_msg.get("content", [])).strip()
 
-            try:
-                tool_result = asyncio.run(mcp_client.call_tool(function_name, params))
-            except Exception as exc:
-                logger.warning("MCP tool %s failed: %s", function_name, exc)
-                tool_result = f"ERROR: {exc}"
+    # Exceeded tool rounds — return whatever text the model last produced.
+    return "".join(b.get("text", "") for b in messages[-1].get("content", []) if isinstance(b, dict)).strip()
 
-            results.append({
-                "functionResult": {
-                    "actionGroup": action_group,
-                    "function": function_name,
-                    "responseBody": {"TEXT": {"body": tool_result}},
-                }
-            })
 
-        session_state = {
-            "invocationId": return_control["invocationId"],
-            "returnControlInvocationResults": results,
-        }
-
-    raise RuntimeError(f"Agent '{agent_key}' exceeded {_MAX_ROC_ROUNDS} Return-of-Control rounds")
+_VALID_CATEGORIES = {
+    "DEPENDENCY_VERSION", "AUTH_FAILURE", "NETWORK_TIMEOUT", "CONFIG_ERROR",
+    "TEST_FAILURE", "BUILD_ERROR", "LINT_ERROR", "PERMISSION_ERROR", "UNKNOWN",
+}
 
 
 def classify_failure(state: AgentState) -> AgentState:
-    session_id = str(uuid.uuid4())
     prompt = (
         f"Workflow file: {state['workflow_file']}\n\n"
         f"Failure logs (scrubbed):\n{state['logs'][:4000]}\n\n"
-        "Classify the failure. Respond with exactly one of: "
+        "Classify the failure. Respond with EXACTLY one of these tokens and nothing else:\n"
         "DEPENDENCY_VERSION | AUTH_FAILURE | NETWORK_TIMEOUT | CONFIG_ERROR | "
         "TEST_FAILURE | BUILD_ERROR | LINT_ERROR | PERMISSION_ERROR | UNKNOWN"
     )
-    category = _invoke_bedrock_agent("classifier", session_id, prompt)
-    valid = {"DEPENDENCY_VERSION", "AUTH_FAILURE", "NETWORK_TIMEOUT", "CONFIG_ERROR",
-             "TEST_FAILURE", "BUILD_ERROR", "LINT_ERROR", "PERMISSION_ERROR", "UNKNOWN"}
-    category = category.upper().strip() if category.upper().strip() in valid else "UNKNOWN"
+    raw = _converse(prompt, max_tokens=20).upper().strip()
+    category = raw if raw in _VALID_CATEGORIES else next((c for c in _VALID_CATEGORIES if c in raw), "UNKNOWN")
     trace = state.get("agent_trace", [])
     trace.append(f"classify_failure → {category}")
     return {**state, "failure_category": category, "agent_trace": trace}
 
 
 def analyse_root_cause(state: AgentState) -> AgentState:
-    session_id = str(uuid.uuid4())
+    github_token = state.get("github_token")
+
+    def _exec(name: str, params: dict) -> str:
+        if name not in _GITHUB_TOOLS:
+            return f"ERROR: tool '{name}' is not available"
+        call_params = {**params}
+        if github_token:
+            call_params["github_token"] = github_token
+        return asyncio.run(mcp_client.call_tool(name, call_params))
+
     prompt = (
         f"Repository: {state['repo_owner']}/{state['repo_name']}\n"
+        f"Workflow file: {state['workflow_file']}\n"
+        f"Run ID: {state.get('run_id', '')}\n"
+        f"Commit SHA: {state.get('head_sha', '')}\n"
         f"Failure category: {state['failure_category']}\n\n"
         f"Workflow YAML:\n{state['workflow_yaml'][:3000]}\n\n"
-        f"Logs:\n{state['logs'][:4000]}\n\n"
-        "Identify the specific root cause. Use the github-tools action group if you need "
-        "more context. Respond in JSON: "
+        f"Logs (truncated):\n{state['logs'][:4000]}\n\n"
+        "Identify the SPECIFIC root cause of this failure. If the truncated logs above are "
+        "not enough, call get_run_logs (use the Run ID above) to fetch the full logs before "
+        'concluding. When done, respond ONLY with JSON: '
         '{"root_cause": "...", "severity": "low|medium|high|critical"}'
     )
-    raw = _invoke_bedrock_agent("root_cause", session_id, prompt, github_token=state.get("github_token"))
-    try:
-        parsed = json.loads(raw)
+    raw = _converse_with_tools(prompt, _ROOT_CAUSE_TOOLCONFIG, _exec)
+    parsed = _parse_json(raw)
+    if parsed:
         root_cause = parsed.get("root_cause", raw)
         severity = parsed.get("severity", "medium")
-    except json.JSONDecodeError:
+    else:
         root_cause = raw
         severity = "medium"
     trace = state.get("agent_trace", [])
@@ -226,42 +298,42 @@ def review_security(state: AgentState) -> AgentState:
         trace.append("review_security → skipped (no fix)")
         return {**state, "security_risk_score": 0, "security_findings": [], "agent_trace": trace}
 
-    session_id = str(uuid.uuid4())
     prompt = (
         f"Proposed workflow YAML fix:\n{state['suggested_yaml']}\n\n"
         "Review for security issues. Check: hardcoded secrets, missing SHA pins on actions, "
         "overbroad permissions, dangerous shell commands, untrusted registries.\n"
-        'Respond in JSON: {"risk_score": 0-10, "findings": ["finding1", ...]}'
+        'Respond ONLY with JSON: {"risk_score": 0-10, "findings": ["finding1", ...]}'
     )
-    raw = _invoke_bedrock_agent("security_reviewer", session_id, prompt)
-    try:
-        parsed = json.loads(raw)
-        risk_score = int(parsed.get("risk_score", 0))
-        findings = parsed.get("findings", [])
-    except (json.JSONDecodeError, ValueError):
+    raw = _converse(prompt, max_tokens=512)
+    parsed = _parse_json(raw)
+    if parsed:
+        try:
+            risk_score = int(parsed.get("risk_score", 0))
+        except (TypeError, ValueError):
+            risk_score = 0
+        findings = parsed.get("findings", []) or []
+    else:
         risk_score = 0
         findings = []
-    trace = state.get("agent_trace", [])
     trace.append(f"review_security → risk_score={risk_score}, findings={len(findings)}")
     return {**state, "security_risk_score": risk_score, "security_findings": findings, "agent_trace": trace}
 
 
 def write_pr_description(state: AgentState) -> AgentState:
-    session_id = str(uuid.uuid4())
     findings_text = "\n".join(f"- {f}" for f in state.get("security_findings", [])) or "None identified"
     prompt = (
         f"Root cause: {state['root_cause']}\n"
         f"Failure category: {state['failure_category']}\n"
         f"Security findings: {findings_text}\n\n"
         "Write a concise GitHub PR title and body for the AI-suggested fix. "
-        'Respond in JSON: {"title": "fix: ...", "body": "## Root Cause\\n..."}'
+        'Respond ONLY with JSON: {"title": "fix: ...", "body": "## Root Cause\\n..."}'
     )
-    raw = _invoke_bedrock_agent("pr_writer", session_id, prompt)
-    try:
-        parsed = json.loads(raw)
+    raw = _converse(prompt, max_tokens=1024)
+    parsed = _parse_json(raw)
+    if parsed:
         pr_title = parsed.get("title", f"fix: AI remediation for {state['workflow_file']}")
         pr_description = parsed.get("body", f"## Root Cause\n{state['root_cause']}")
-    except json.JSONDecodeError:
+    else:
         pr_title = f"fix: AI remediation for {state['workflow_file']}"
         pr_description = f"## Root Cause\n{state['root_cause']}"
     trace = state.get("agent_trace", [])

@@ -383,6 +383,7 @@ def process_failed_workflow(self, message: dict) -> dict:
                 "workflow_yaml": workflow_yaml,
                 "logs": scrubbed_logs,
                 "head_sha": head_sha,
+                "run_id": run_id,
                 "github_token": github_token,
                 "agent_trace": [],
             })
