@@ -182,17 +182,7 @@ def classify_failure(state: AgentState) -> AgentState:
 
 
 def analyse_root_cause(state: AgentState) -> AgentState:
-    github_token = state.get("github_token")
-
-    def _exec(name: str, params: dict) -> str:
-        if name not in _GITHUB_TOOLS:
-            return f"ERROR: tool '{name}' is not available"
-        call_params = {**params}
-        if github_token:
-            call_params["github_token"] = github_token
-        return asyncio.run(mcp_client.call_tool(name, call_params))
-
-    prompt = (
+    base_prompt = (
         f"Repository: {state['repo_owner']}/{state['repo_name']}\n"
         f"Workflow file: {state['workflow_file']}\n"
         f"Run ID: {state.get('run_id', '')}\n"
@@ -200,12 +190,35 @@ def analyse_root_cause(state: AgentState) -> AgentState:
         f"Failure category: {state['failure_category']}\n\n"
         f"Workflow YAML:\n{state['workflow_yaml'][:3000]}\n\n"
         f"Logs (truncated):\n{state['logs'][:4000]}\n\n"
-        "Identify the SPECIFIC root cause of this failure. If the truncated logs above are "
-        "not enough, call get_run_logs (use the Run ID above) to fetch the full logs before "
-        'concluding. When done, respond ONLY with JSON: '
-        '{"root_cause": "...", "severity": "low|medium|high|critical"}'
     )
-    raw = _converse_with_tools(prompt, _ROOT_CAUSE_TOOLCONFIG, _exec)
+
+    if settings.USE_MCP_TOOLS:
+        # Agentic path: let the model pull more context via the in-cluster MCP
+        # server (Converse tool-use). Off by default — see config.USE_MCP_TOOLS.
+        github_token = state.get("github_token")
+
+        def _exec(name: str, params: dict) -> str:
+            if name not in _GITHUB_TOOLS:
+                return f"ERROR: tool '{name}' is not available"
+            call_params = {**params}
+            if github_token:
+                call_params["github_token"] = github_token
+            return asyncio.run(mcp_client.call_tool(name, call_params))
+
+        prompt = base_prompt + (
+            "Identify the SPECIFIC root cause. If the truncated logs are not enough, call "
+            "get_run_logs (use the Run ID above) to fetch the full logs before concluding. "
+            'When done, respond ONLY with JSON: '
+            '{"root_cause": "...", "severity": "low|medium|high|critical"}'
+        )
+        raw = _converse_with_tools(prompt, _ROOT_CAUSE_TOOLCONFIG, _exec)
+    else:
+        prompt = base_prompt + (
+            "Identify the SPECIFIC root cause of this failure from the information above. "
+            'Respond ONLY with JSON: {"root_cause": "...", "severity": "low|medium|high|critical"}'
+        )
+        raw = _converse(prompt, max_tokens=1024)
+
     parsed = _parse_json(raw)
     if parsed:
         root_cause = parsed.get("root_cause", raw)
