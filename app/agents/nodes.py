@@ -1,11 +1,11 @@
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 
 import boto3
+import yaml
 
 from app.core.config import settings
 from app.agents.state import AgentState
@@ -146,74 +146,86 @@ def analyse_root_cause(state: AgentState) -> AgentState:
     return {**state, "root_cause": root_cause, "root_cause_severity": severity, "agent_trace": trace}
 
 
-def _looks_like_yaml(text: str) -> bool:
-    """Heuristic: return True when the text looks like YAML rather than English prose.
+def _strip_fences(text: str) -> str:
+    """Remove accidental markdown code fences from a model's YAML output."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = "\n".join(l for l in t.splitlines() if not l.strip().startswith("```")).strip()
+    return t
 
-    Bedrock Agents sometimes refuse to produce YAML and instead return a capability
-    disclaimer like "The agent does not have the capability to directly modify the
-    YAML file".  We detect this by checking that the response contains at least one
-    YAML key-value line (``key: value`` or ``key:`` alone on a line) within the first
-    20 lines and does NOT start with a long English sentence.
+
+def _validate_fix(original: str, fixed: str) -> tuple[bool, str]:
+    """Validate a generated workflow fix. Returns (ok, reason).
+
+    Catches the failure modes behind 'it produces junk': empty output, a
+    capability refusal / prose (parses as a scalar, not a workflow mapping),
+    malformed YAML, or an unchanged copy of the original (a non-fix).
     """
-    lines = [l for l in text.strip().splitlines() if l.strip()][:20]
-    if not lines:
-        return False
-    # A plain English disclaimer will usually start with a capital word and no colon in pos 1-30
-    first = lines[0].strip()
-    if first and first[0].isupper() and ":" not in first[:40] and not first.startswith("name"):
-        return False
-    yaml_key_pattern = re.compile(r"^\s*[\w\-\.]+\s*:")
-    matching = sum(1 for l in lines if yaml_key_pattern.match(l))
-    return matching >= 2
+    if not fixed or not fixed.strip():
+        return False, "empty output"
+    try:
+        parsed = yaml.safe_load(fixed)
+    except yaml.YAMLError:
+        return False, "invalid YAML syntax"
+    # A real GitHub Actions workflow is a mapping with a top-level `jobs:` key.
+    # (The `on:` key is parsed by YAML as the boolean True, so we key off jobs.)
+    if not isinstance(parsed, dict) or "jobs" not in parsed:
+        return False, "not a GitHub Actions workflow (no jobs:)"
+    if fixed.strip() == original.strip():
+        return False, "no change from original"
+    return True, "ok"
 
 
 def generate_fix(state: AgentState) -> AgentState:
-    session_id = str(uuid.uuid4())
-    prompt = (
-        f"Repository: {state['repo_owner']}/{state['repo_name']}\n"
-        f"ROOT CAUSE: {state['root_cause']}\n\n"
-        f"ORIGINAL FAILING YAML:\n{state['workflow_yaml']}\n\n"
-        "CANONICAL STABLE VERSIONS — use these whenever a version is invalid or unspecified:\n"
-        "  Python  → 3.12 | Node.js → 20 | Java → 21 | Ruby → 3.3 | Go → 1.22\n"
-        "  actions/checkout → v4 | actions/setup-python → v5 | actions/setup-node → v4\n\n"
-        "STRICT OUTPUT RULES:\n"
-        "1. Output ONLY the corrected YAML — zero prose, zero explanation.\n"
-        "2. Do NOT use markdown fences (no ```).\n"
-        "3. Do NOT ask questions. Do NOT say 'I need to ask' or 'please provide'.\n"
-        "4. Replace any clearly invalid version (e.g. '99', '0') with the stable version above.\n"
-        "5. Make the MINIMAL change — keep every other line identical to the original.\n"
-        "Output the corrected YAML now:"
-    )
-    fixed_yaml = _invoke_bedrock_agent("yaml_fixer", session_id, prompt, github_token=state.get("github_token"))
-    if fixed_yaml.startswith("```"):
-        lines = fixed_yaml.splitlines()
-        fixed_yaml = "\n".join(l for l in lines if not l.startswith("```")).strip()
+    """Generate a corrected workflow YAML via the Bedrock Converse API.
+
+    Converse is the primary (and only) path here — the yaml_fixer Bedrock Agent
+    frequently returned a capability refusal ("I can't modify files") instead of
+    YAML. Every candidate is validated as a real, *changed* GitHub Actions
+    workflow before being stored; invalid output is rejected (suggested_yaml
+    stays None) rather than surfaced to the user as a bogus fix.
+    """
+    from app.services.bedrock_client import BedrockRemediationClient
 
     trace = state.get("agent_trace", [])
+    client = BedrockRemediationClient()
+    original = state["workflow_yaml"]
 
-    if not _looks_like_yaml(fixed_yaml):
-        # The agent returned a capability refusal or English prose instead of YAML.
-        # Fall back to calling the Bedrock Converse API directly.
-        logger.warning(
-            "yaml_fixer agent returned non-YAML response (capability refusal?). "
-            "Falling back to direct Bedrock Converse API. Agent response was: %r",
-            fixed_yaml[:200],
+    fixed = ""
+    last_reason = "unknown"
+    for attempt in range(2):
+        candidate = _strip_fences(
+            client.generate_yaml_fix(
+                workflow_yaml=original,
+                root_cause=state["root_cause"],
+                failure_category=state.get("failure_category", "UNKNOWN"),
+                logs=state.get("logs", ""),
+            )
         )
-        trace.append("generate_fix → agent refused, falling back to Converse API")
-        from app.services.bedrock_client import BedrockRemediationClient
-        fallback = BedrockRemediationClient()
-        fixed_yaml = fallback.generate_yaml_fix(
-            workflow_yaml=state["workflow_yaml"],
-            root_cause=state["root_cause"],
-            failure_category=state.get("failure_category", "UNKNOWN"),
-            logs=state.get("logs", ""),
-        )
+        ok, reason = _validate_fix(original, candidate)
+        if ok:
+            fixed = candidate
+            break
+        last_reason = reason
+        logger.warning("generate_fix attempt %d produced an invalid fix (%s)", attempt + 1, reason)
 
-    trace.append("generate_fix → suggested_yaml produced")
-    return {**state, "suggested_yaml": fixed_yaml, "agent_trace": trace}
+    if not fixed:
+        # No safe, valid fix — store the analysis without a suggestion rather
+        # than persisting junk. Downstream nodes handle a missing fix.
+        trace.append(f"generate_fix → no valid fix produced ({last_reason})")
+        return {**state, "suggested_yaml": None, "agent_trace": trace}
+
+    trace.append("generate_fix → suggested_yaml produced (validated)")
+    return {**state, "suggested_yaml": fixed, "agent_trace": trace}
 
 
 def review_security(state: AgentState) -> AgentState:
+    trace = state.get("agent_trace", [])
+    if not state.get("suggested_yaml"):
+        # No fix was produced — nothing to review.
+        trace.append("review_security → skipped (no fix)")
+        return {**state, "security_risk_score": 0, "security_findings": [], "agent_trace": trace}
+
     session_id = str(uuid.uuid4())
     prompt = (
         f"Proposed workflow YAML fix:\n{state['suggested_yaml']}\n\n"

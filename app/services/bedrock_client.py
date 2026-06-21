@@ -239,7 +239,7 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
                 response = self._client.converse(
                     modelId=self._model_id,
                     messages=[{"role": "user", "content": [{"text": prompt}]}],
-                    inferenceConfig={"maxTokens": 8192},
+                    inferenceConfig={"maxTokens": 8192, "temperature": 0},
                 )
                 raw: str = response["output"]["message"]["content"][0]["text"].strip()
                 # Strip any accidental markdown fences
