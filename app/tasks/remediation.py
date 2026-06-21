@@ -206,6 +206,9 @@ def _update_remediation(
     root_cause: str = "",
     suggested_yaml: str | None = None,
     error_message: str | None = None,
+    failure_category: str | None = None,
+    confidence_score: int | None = None,
+    confidence_reasoning: str | None = None,
 ) -> None:
     """Update an existing Remediation row."""
     session.execute(
@@ -216,6 +219,9 @@ def _update_remediation(
                 root_cause = :root_cause,
                 suggested_yaml = :suggested_yaml,
                 error_message = :error_message,
+                failure_category = :failure_category,
+                confidence_score = :confidence_score,
+                confidence_reasoning = :confidence_reasoning,
                 updated_at = :updated_at
             WHERE id = :id
             """
@@ -226,6 +232,9 @@ def _update_remediation(
             "root_cause": root_cause,
             "suggested_yaml": suggested_yaml,
             "error_message": error_message,
+            "failure_category": failure_category,
+            "confidence_score": confidence_score,
+            "confidence_reasoning": confidence_reasoning,
             "updated_at": datetime.now(timezone.utc),
         },
     )
@@ -321,11 +330,15 @@ def process_failed_workflow(self, message: dict) -> dict:
             root_cause = final_state.get("root_cause", "")
             suggested_yaml = final_state.get("suggested_yaml")
             pr_title = final_state.get("pr_title", "")
+            failure_category = final_state.get("failure_category")
+            confidence_score = final_state.get("confidence_score")
+            confidence_reasoning = final_state.get("confidence_reasoning")
             logger.info(
-                "Multi-agent trace: %s | pr_title: %s | security_risk: %s",
+                "Multi-agent trace: %s | pr_title: %s | security_risk: %s | confidence: %s",
                 final_state.get("agent_trace", []),
                 pr_title,
                 final_state.get("security_risk_score"),
+                confidence_score,
             )
         else:
             logger.info("Invoking Bedrock (single-agent) for run %s", run_id)
@@ -336,6 +349,9 @@ def process_failed_workflow(self, message: dict) -> dict:
             root_cause = analysis.get("root_cause", "")
             suggested_yaml = analysis.get("fixed_yaml")
             pr_title = analysis.get("pr_title", "")
+            failure_category = None
+            confidence_score = None
+            confidence_reasoning = None
 
         _update_remediation(
             session,
@@ -343,6 +359,9 @@ def process_failed_workflow(self, message: dict) -> dict:
             status="analyzed",
             root_cause=root_cause,
             suggested_yaml=suggested_yaml,
+            failure_category=failure_category,
+            confidence_score=confidence_score,
+            confidence_reasoning=confidence_reasoning,
         )
         _publish_event("remediation_updated", {
             "id": str(remediation_id),
