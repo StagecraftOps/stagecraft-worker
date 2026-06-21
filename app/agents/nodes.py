@@ -129,8 +129,8 @@ def analyse_root_cause(state: AgentState) -> AgentState:
         f"Failure category: {state['failure_category']}\n\n"
         f"Workflow YAML:\n{state['workflow_yaml'][:3000]}\n\n"
         f"Logs:\n{state['logs'][:4000]}\n\n"
-        "Identify the specific root cause. Use the github-tools and aws-diagnostics action "
-        "groups if you need more context. Respond in JSON: "
+        "Identify the specific root cause. Use the github-tools action group if you need "
+        "more context. Respond in JSON: "
         '{"root_cause": "...", "severity": "low|medium|high|critical"}'
     )
     raw = _invoke_bedrock_agent("root_cause", session_id, prompt, github_token=state.get("github_token"))

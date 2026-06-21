@@ -7,24 +7,17 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # Maps a Bedrock action group function name to the MCP server that implements it.
-# Only read-only tools are exposed to agents — see nodes.py for why write
+# Only read-only GitHub tools are exposed to agents — see nodes.py for why write
 # tools (branch/commit/PR) are deliberately absent here.
 _GITHUB_TOOLS = {
     "get_workflow_yaml",
     "get_run_logs",
-}
-_AWS_TOOLS = {
-    "get_cloudwatch_logs",
-    "get_sqs_queue_depth",
-    "describe_ecr_image",
 }
 
 
 def _server_url_for(tool_name: str) -> str:
     if tool_name in _GITHUB_TOOLS:
         return settings.MCP_GITHUB_URL
-    if tool_name in _AWS_TOOLS:
-        return settings.MCP_AWS_URL
     raise ValueError(f"Unknown MCP tool '{tool_name}'")
 
 
