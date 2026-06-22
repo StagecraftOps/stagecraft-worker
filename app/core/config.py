@@ -16,14 +16,11 @@ class Settings(BaseSettings):
 
     GITHUB_TOKEN: str = ""
 
-    # In-cluster MCP server (SSE). The root_cause node can call its read-only
-    # tools via Converse tool-use (worker bridges the call). Disabled by default:
-    # the in-cluster MCP server runs fastmcp 0.4.x and the worker's mcp 1.28 SSE
-    # client doesn't interoperate cleanly with it, which can hang the task. Flip
-    # USE_MCP_TOOLS on once the server is on a compatible MCP version. The logs
-    # the node needs are already provided in state, so this is non-essential.
+    # In-cluster MCP server (SSE). Bedrock agents return control to the worker,
+    # which calls these tools (via mcp_client) and re-invokes the agent with the
+    # result. MCP failures are caught and fed back, so a flaky tool never breaks
+    # the analysis.
     MCP_GITHUB_URL: str = "http://agora-mcp-github.agora.svc.cluster.local:8010/sse"
-    USE_MCP_TOOLS: bool = False
 
     DATABASE_URL: str = "postgresql://agora:password@postgres:5432/agora"
     REDIS_URL: str = "redis://redis:6379/0"
