@@ -16,10 +16,9 @@ class Settings(BaseSettings):
 
     GITHUB_TOKEN: str = ""
 
-    # In-cluster MCP server (SSE). Bedrock agents return control to the worker,
-    # which calls these tools (via mcp_client) and re-invokes the agent with the
-    # result. MCP failures are caught and fed back, so a flaky tool never breaks
-    # the analysis.
+    # In-cluster MCP server (SSE). The root_cause node uses Converse tool-use to
+    # call get_run_logs / get_workflow_yaml; the worker bridges those calls here.
+    # MCP failures are caught and fed back so a flaky server never stalls analysis.
     MCP_GITHUB_URL: str = "http://agora-mcp-github.agora.svc.cluster.local:8010/sse"
 
     DATABASE_URL: str = "postgresql://agora:password@postgres:5432/agora"
@@ -29,38 +28,6 @@ class Settings(BaseSettings):
     TOKEN_ENCRYPTION_KEY: str = ""
 
     USE_MULTI_AGENT: bool = True
-
-    BEDROCK_AGENT_ID_CLASSIFIER: str = ""
-    BEDROCK_AGENT_ID_ROOT_CAUSE: str = ""
-    BEDROCK_AGENT_ID_YAML_FIXER: str = ""
-    BEDROCK_AGENT_ID_SECURITY_REVIEWER: str = ""
-    BEDROCK_AGENT_ID_PR_WRITER: str = ""
-
-    BEDROCK_AGENT_ALIAS_ID_CLASSIFIER: str = "TSTALIASID"
-    BEDROCK_AGENT_ALIAS_ID_ROOT_CAUSE: str = "TSTALIASID"
-    BEDROCK_AGENT_ALIAS_ID_YAML_FIXER: str = "TSTALIASID"
-    BEDROCK_AGENT_ALIAS_ID_SECURITY_REVIEWER: str = "TSTALIASID"
-    BEDROCK_AGENT_ALIAS_ID_PR_WRITER: str = "TSTALIASID"
-
-    @property
-    def BEDROCK_AGENT_IDS(self) -> dict:
-        return {
-            "classifier": self.BEDROCK_AGENT_ID_CLASSIFIER,
-            "root_cause": self.BEDROCK_AGENT_ID_ROOT_CAUSE,
-            "yaml_fixer": self.BEDROCK_AGENT_ID_YAML_FIXER,
-            "security_reviewer": self.BEDROCK_AGENT_ID_SECURITY_REVIEWER,
-            "pr_writer": self.BEDROCK_AGENT_ID_PR_WRITER,
-        }
-
-    @property
-    def BEDROCK_AGENT_ALIAS_IDS(self) -> dict:
-        return {
-            "classifier": self.BEDROCK_AGENT_ALIAS_ID_CLASSIFIER,
-            "root_cause": self.BEDROCK_AGENT_ALIAS_ID_ROOT_CAUSE,
-            "yaml_fixer": self.BEDROCK_AGENT_ALIAS_ID_YAML_FIXER,
-            "security_reviewer": self.BEDROCK_AGENT_ALIAS_ID_SECURITY_REVIEWER,
-            "pr_writer": self.BEDROCK_AGENT_ALIAS_ID_PR_WRITER,
-        }
 
 
 settings = Settings()
