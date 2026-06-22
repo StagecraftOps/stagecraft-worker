@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from cryptography.fernet import InvalidToken
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
+import yaml
 
 from app.core.celery_app import app
 from app.core.config import settings
@@ -37,6 +38,64 @@ _sync_engine = create_engine(
 SyncSessionLocal = sessionmaker(bind=_sync_engine, autocommit=False, autoflush=False)
 
 REDIS_EVENTS_CHANNEL = "agora:events"
+
+
+def _strip_code_fences(text: str) -> str:
+    value = (text or "").strip()
+    if value.startswith("```"):
+        value = "\n".join(
+            line for line in value.splitlines() if not line.strip().startswith("```")
+        ).strip()
+    return value
+
+
+def _normalize_suggested_yaml(original: str, candidate: str | None) -> tuple[bool, str]:
+    normalized = _strip_code_fences(candidate or "")
+    if not normalized:
+        return False, "empty output"
+    try:
+        parsed = yaml.safe_load(normalized)
+    except yaml.YAMLError:
+        return False, "invalid YAML syntax"
+    if not isinstance(parsed, dict) or "jobs" not in parsed:
+        return False, "not a GitHub Actions workflow (no jobs:)"
+    if normalized.strip() == original.strip():
+        return False, "no change from original"
+    return True, normalized
+
+
+def _recover_suggested_yaml(
+    workflow_yaml: str,
+    root_cause: str,
+    failure_category: str | None,
+    logs: str,
+    workflow_name: str,
+    repo_full_name: str,
+) -> str | None:
+    """Try stricter non-agent fallbacks when the multi-agent pipeline finds no valid fix."""
+    bedrock = BedrockRemediationClient()
+
+    candidate = bedrock.generate_yaml_fix(
+        workflow_yaml=workflow_yaml,
+        root_cause=root_cause,
+        failure_category=failure_category or "UNKNOWN",
+        logs=logs,
+    )
+    ok, normalized = _normalize_suggested_yaml(workflow_yaml, candidate)
+    if ok:
+        return normalized
+    logger.warning("Direct YAML fallback produced an invalid fix (%s)", normalized)
+
+    analysis = bedrock.analyze_failure(
+        workflow_yaml, logs, workflow_name, repo_full_name
+    )
+    ok, normalized = _normalize_suggested_yaml(
+        workflow_yaml, analysis.get("fixed_yaml")
+    )
+    if ok:
+        return normalized
+    logger.warning("Single-agent Bedrock fallback produced an invalid fix (%s)", normalized)
+    return None
 
 def _publish_event(event_type: str, data: dict) -> None:
     """Fire-and-forget Redis publish so WebSocket clients get live updates."""
@@ -414,6 +473,45 @@ def process_failed_workflow(self, message: dict) -> dict:
             failure_category = None
             confidence_score = None
             confidence_reasoning = None
+
+        if not suggested_yaml and root_cause:
+            logger.warning(
+                "Analysis found root cause but no valid YAML fix for run %s; trying direct Bedrock fallback",
+                run_id,
+            )
+            suggested_yaml = _recover_suggested_yaml(
+                workflow_yaml=workflow_yaml,
+                root_cause=root_cause,
+                failure_category=failure_category,
+                logs=scrubbed_logs,
+                workflow_name=workflow_name,
+                repo_full_name=f"{repo_owner}/{repo_name}",
+            )
+
+        if not suggested_yaml:
+            message = "AI identified the root cause but could not produce a valid YAML fix."
+            _update_remediation(
+                session,
+                remediation_id,
+                status="failed",
+                root_cause=root_cause,
+                suggested_yaml=None,
+                error_message=message,
+                failure_category=failure_category,
+                confidence_score=0,
+                confidence_reasoning="No valid YAML suggestion was produced.",
+            )
+            _publish_event("remediation_updated", {
+                "id": str(remediation_id),
+                "status": "failed",
+                "root_cause": root_cause,
+            })
+            logger.warning(
+                "Analysis completed without a valid YAML fix for run %s (remediation %s)",
+                run_id,
+                remediation_id,
+            )
+            return {"status": "failed", "remediation_id": str(remediation_id)}
 
         _update_remediation(
             session,
