@@ -16,10 +16,11 @@ class Settings(BaseSettings):
 
     GITHUB_TOKEN: str = ""
 
-    # In-cluster MCP server (SSE). The root_cause node uses Converse tool-use to
-    # call get_run_logs / get_workflow_yaml; the worker bridges those calls here.
-    # MCP failures are caught and fed back so a flaky server never stalls analysis.
+    # MCP enrichment is optional. The worker already fetches the workflow and
+    # failure logs, so remediation must work if this separate service is down.
+    USE_MCP_TOOLS: bool = False
     MCP_GITHUB_URL: str = "http://agora-mcp-github.agora.svc.cluster.local:8010/sse"
+    MCP_TOOL_TIMEOUT_SECONDS: float = 15.0
 
     DATABASE_URL: str = "postgresql://agora:password@postgres:5432/agora"
     REDIS_URL: str = "redis://redis:6379/0"

@@ -168,11 +168,11 @@ _ROOT_CAUSE_TOOLCONFIG = {
                     "json": {
                         "type": "object",
                         "properties": {
-                            "repo_owner": {"type": "string", "description": "GitHub org or user"},
-                            "repo_name": {"type": "string", "description": "Repository name"},
+                            "owner": {"type": "string", "description": "GitHub org or user"},
+                            "repo": {"type": "string", "description": "Repository name"},
                             "run_id": {"type": "integer", "description": "GitHub Actions run ID"},
                         },
-                        "required": ["repo_owner", "repo_name", "run_id"],
+                        "required": ["owner", "repo", "run_id"],
                     }
                 },
             }
@@ -188,14 +188,18 @@ _ROOT_CAUSE_TOOLCONFIG = {
                     "json": {
                         "type": "object",
                         "properties": {
-                            "repo_owner": {"type": "string", "description": "GitHub org or user"},
-                            "repo_name": {"type": "string", "description": "Repository name"},
-                            "workflow_file": {
+                            "owner": {"type": "string", "description": "GitHub org or user"},
+                            "repo": {"type": "string", "description": "Repository name"},
+                            "path": {
                                 "type": "string",
                                 "description": "Workflow file path (e.g. .github/workflows/ci.yml)",
                             },
+                            "ref": {
+                                "type": "string",
+                                "description": "Commit SHA or branch from which to read the workflow",
+                            },
                         },
-                        "required": ["repo_owner", "repo_name", "workflow_file"],
+                        "required": ["owner", "repo", "path", "ref"],
                     }
                 },
             }
@@ -232,17 +236,21 @@ def analyse_root_cause(state: AgentState) -> AgentState:
         f"Failure category: {state['failure_category']}\n\n"
         f"Workflow YAML:\n{state['workflow_yaml'][:3000]}\n\n"
         f"Logs:\n{state['logs'][:4000]}\n\n"
-        "Identify the specific root cause. If the logs above are truncated or unclear, "
-        "call get_run_logs with the repo owner, repo name, and run ID shown above to fetch "
-        "the full failure output. "
+        "Identify the specific root cause. If MCP enrichment is enabled and the supplied "
+        "context is insufficient, call get_run_logs with owner, repo, and run_id; or call "
+        "get_workflow_yaml with owner, repo, path, and ref. "
         'Respond in JSON: {"root_cause": "...", "severity": "low|medium|high|critical"}'
     )
-    raw = _converse_with_tools(
-        prompt,
-        tool_config=_ROOT_CAUSE_TOOLCONFIG,
-        github_token=state.get("github_token"),
-        max_tokens=1024,
-    )
+    if settings.USE_MCP_TOOLS:
+        raw = _converse_with_tools(
+            prompt,
+            tool_config=_ROOT_CAUSE_TOOLCONFIG,
+            github_token=state.get("github_token"),
+            max_tokens=1024,
+        )
+    else:
+        logger.info("MCP enrichment disabled; using fetched workflow and log context")
+        raw = _converse(prompt, max_tokens=1024)
     parsed = _parse_json(raw)
     root_cause = parsed.get("root_cause", raw) if parsed else raw
     severity = parsed.get("severity", "medium") if parsed else "medium"

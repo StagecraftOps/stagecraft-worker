@@ -1,3 +1,4 @@
+import asyncio
 import logging
 
 from mcp import ClientSession
@@ -30,10 +31,16 @@ async def call_tool(tool_name: str, params: dict) -> str:
     MCP server here and feeds the result back.
     """
     url = _server_url_for(tool_name)
-    async with sse_client(url) as (read_stream, write_stream):
-        async with ClientSession(read_stream, write_stream) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, arguments=params)
+    try:
+        async with asyncio.timeout(settings.MCP_TOOL_TIMEOUT_SECONDS):
+            async with sse_client(url) as (read_stream, write_stream):
+                async with ClientSession(read_stream, write_stream) as session:
+                    await session.initialize()
+                    result = await session.call_tool(tool_name, arguments=params)
+    except TimeoutError as exc:
+        raise TimeoutError(
+            f"MCP tool {tool_name!r} exceeded {settings.MCP_TOOL_TIMEOUT_SECONDS}s"
+        ) from exc
 
     parts = []
     for block in getattr(result, "content", None) or []:
