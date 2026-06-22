@@ -298,6 +298,18 @@ def generate_fix(state: AgentState) -> AgentState:
                 logs=state.get("logs", ""),
             )
         )
+        # Post-process to fix common formatting anomalies where colons lack trailing space
+        import re
+        lines = []
+        spacing_pattern = re.compile(r"^([ \t]*[a-zA-Z0-9_-]+):(?!\s)(.+)$")
+        for line in candidate.splitlines():
+            m = spacing_pattern.match(line)
+            if m:
+                lines.append(f"{m.group(1)}: {m.group(2)}")
+            else:
+                lines.append(line)
+        candidate = "\n".join(lines)
+
         ok, reason = _validate_fix(original, candidate)
         if ok:
             fixed = candidate

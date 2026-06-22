@@ -53,6 +53,18 @@ def _normalize_suggested_yaml(original: str, candidate: str | None) -> tuple[boo
     normalized = _strip_code_fences(candidate or "")
     if not normalized:
         return False, "empty output"
+    # Post-process to fix common formatting anomalies where colons lack trailing space
+    import re
+    lines = []
+    spacing_pattern = re.compile(r"^([ \t]*[a-zA-Z0-9_-]+):(?!\s)(.+)$")
+    for line in normalized.splitlines():
+        m = spacing_pattern.match(line)
+        if m:
+            lines.append(f"{m.group(1)}: {m.group(2)}")
+        else:
+            lines.append(line)
+    normalized = "\n".join(lines)
+
     try:
         parsed = yaml.safe_load(normalized)
     except yaml.YAMLError:
