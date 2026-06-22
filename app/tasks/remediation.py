@@ -93,6 +93,7 @@ def _recover_suggested_yaml(
         failure_category=failure_category or "UNKNOWN",
         logs=logs,
     )
+    logger.warning("[RAW BEDROCK YAML] direct fallback candidate (first 800 chars): %r", (candidate or "")[:800])
     ok, normalized = _normalize_suggested_yaml(workflow_yaml, candidate)
     if ok:
         return normalized
@@ -119,10 +120,13 @@ def _heuristic_yaml_fix(
 
     This is intentionally narrow: we only auto-edit when the worker has a clear
     dependency-version signal and a known bad version token to replace.
+
+    NOTE: We intentionally do NOT gate on failure_category because Bedrock
+    occasionally misclassifies python-version failures as UNKNOWN rather than
+    DEPENDENCY_VERSION. Root-cause text is a more reliable signal.
     """
-    if (failure_category or "").upper() != "DEPENDENCY_VERSION":
-        return None
-    if "python" not in root_cause.lower() and "version" not in root_cause.lower():
+    root_lower = (root_cause or "").lower()
+    if "python" not in root_lower and "version" not in root_lower:
         return None
 
     replacements = [
@@ -142,6 +146,8 @@ def _heuristic_yaml_fix(
         return None
 
     ok, normalized = _normalize_suggested_yaml(workflow_yaml, fixed)
+    if ok:
+        logger.info("_heuristic_yaml_fix applied deterministic python-version fix")
     return normalized if ok else None
 
 def _publish_event(event_type: str, data: dict) -> None:
