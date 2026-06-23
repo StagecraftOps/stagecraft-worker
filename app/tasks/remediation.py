@@ -189,6 +189,23 @@ def _get_github_token_for_org(session: Session, org_login: str) -> str:
 
     raise RuntimeError(f"No GitHub token available for org '{org_login}'")
 
+def _get_owner_email_for_org(session: Session, org_login: str) -> str | None:
+    """Email of the org's owner (User.email — null if their GitHub email is
+    private and they authorized before the user:email scope was added)."""
+    row = session.execute(
+        text(
+            """
+            SELECT u.email
+            FROM organizations o
+            JOIN users u ON u.id = o.owner_id
+            WHERE o.login = :login
+            LIMIT 1
+            """
+        ),
+        {"login": org_login},
+    ).fetchone()
+    return row[0] if row else None
+
 def _parse_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -631,6 +648,23 @@ def process_failed_workflow(self, message: dict) -> dict:
             )
         except Exception as embed_exc:
             logger.warning("Embedding ingestion failed for remediation %s: %s", remediation_id, embed_exc)
+
+        # Notify the org owner a fix is ready to review. Best-effort — never
+        # fail the analysis over SES being unconfigured/throttled/etc.
+        try:
+            owner_email = _get_owner_email_for_org(session, repo_owner)
+            if owner_email:
+                from app.services.email import send_fix_notification
+                send_fix_notification(
+                    owner_email, repo_name, failure_category, root_cause, str(remediation_id),
+                )
+            else:
+                logger.info(
+                    "No email on file for %s's owner — skipping fix notification for remediation %s",
+                    repo_owner, remediation_id,
+                )
+        except Exception as email_exc:
+            logger.warning("Fix notification email failed for remediation %s: %s", remediation_id, email_exc)
 
         logger.info("Analysis completed for run %s (remediation %s)", run_id, remediation_id)
         return {"status": "analyzed", "remediation_id": str(remediation_id)}

@@ -48,7 +48,13 @@ jobs:
   push:
     name: Push to ECR
     needs: build
-    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') && github.event_name == 'push'
+    # Trivy now runs on every event (used to be PR-only, never actually
+    # gating what reaches ECR) -- explicit trivy_result check since
+    # needs: build alone doesn't guarantee blocking on its internal failure.
+    if: |
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop') &&
+      github.event_name == 'push' &&
+      needs.build.outputs.trivy_result != 'failure'
     uses: aGora-Ops/agora-workflows/.github/workflows/push-to-ecr.yml@main
     with:
       service_name: agora-worker

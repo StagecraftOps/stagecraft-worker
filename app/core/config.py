@@ -36,5 +36,13 @@ class Settings(BaseSettings):
     # INTERNAL_API_KEY (gates its /internal/remediations/search route).
     INTERNAL_API_KEY: str = ""
 
+    # "AI suggested a fix" email notification (SES). Sent to the org
+    # owner's email after a remediation reaches status=analyzed. Best-effort
+    # — a missing/unverified SES identity must never fail the remediation
+    # itself. FRONTEND_URL builds the link to view the fix in the dashboard.
+    SES_ENABLED: bool = False
+    SES_FROM_EMAIL: str = ""
+    FRONTEND_URL: str = "http://localhost:3000"
+
 
 settings = Settings()
