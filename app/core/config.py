@@ -30,5 +30,11 @@ class Settings(BaseSettings):
 
     USE_MULTI_AGENT: bool = True
 
+    # Shared secret checked on POST /internal/investigate (health.py) — the
+    # Investigator Agent's entry point, called synchronously by agora-api's
+    # chat endpoint. Same key, same purpose as agora-api's own
+    # INTERNAL_API_KEY (gates its /internal/remediations/search route).
+    INTERNAL_API_KEY: str = ""
+
 
 settings = Settings()

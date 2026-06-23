@@ -8,17 +8,18 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Maps an MCP tool name to the server that implements it. Only read-only GitHub
-# tools are exposed to the model — see nodes.py for why write tools
-# (branch/commit/PR) are deliberately absent.
-_GITHUB_TOOLS = {
+# Maps an MCP tool name to the server that implements it. All tools here are
+# read-only — see nodes.py for why write tools (branch/commit/PR) are
+# deliberately absent from every tool-calling loop in this codebase.
+_MCP_GITHUB_SERVER_TOOLS = {
     "get_workflow_yaml",
     "get_run_logs",
+    "search_remediations",
 }
 
 
 def _server_url_for(tool_name: str) -> str:
-    if tool_name in _GITHUB_TOOLS:
+    if tool_name in _MCP_GITHUB_SERVER_TOOLS:
         return settings.MCP_GITHUB_URL
     raise ValueError(f"Unknown MCP tool '{tool_name}'")
 
