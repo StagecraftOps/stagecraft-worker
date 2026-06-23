@@ -321,6 +321,11 @@ def _update_remediation(
     failure_category: str | None = None,
     confidence_score: int | None = None,
     confidence_reasoning: str | None = None,
+    security_risk_score: int | None = None,
+    security_findings: list[str] | None = None,
+    pr_title: str | None = None,
+    pr_description: str | None = None,
+    agent_trace: list[str] | None = None,
 ) -> None:
     """Update an existing Remediation row."""
     session.execute(
@@ -334,6 +339,11 @@ def _update_remediation(
                 failure_category = :failure_category,
                 confidence_score = :confidence_score,
                 confidence_reasoning = :confidence_reasoning,
+                security_risk_score = :security_risk_score,
+                security_findings = :security_findings,
+                pr_title = :pr_title,
+                pr_description = :pr_description,
+                agent_trace = :agent_trace,
                 updated_at = :updated_at
             WHERE id = :id
             """
@@ -347,6 +357,11 @@ def _update_remediation(
             "failure_category": failure_category,
             "confidence_score": confidence_score,
             "confidence_reasoning": confidence_reasoning,
+            "security_risk_score": security_risk_score,
+            "security_findings": security_findings,
+            "pr_title": pr_title,
+            "pr_description": pr_description,
+            "agent_trace": agent_trace,
             "updated_at": datetime.now(timezone.utc),
         },
     )
@@ -504,14 +519,18 @@ def process_failed_workflow(self, message: dict) -> dict:
             root_cause = final_state.get("root_cause", "")
             suggested_yaml = final_state.get("suggested_yaml")
             pr_title = final_state.get("pr_title", "")
+            pr_description = final_state.get("pr_description")
             failure_category = final_state.get("failure_category")
             confidence_score = final_state.get("confidence_score")
             confidence_reasoning = final_state.get("confidence_reasoning")
+            security_risk_score = final_state.get("security_risk_score")
+            security_findings = final_state.get("security_findings")
+            agent_trace = final_state.get("agent_trace")
             logger.info(
                 "Multi-agent trace: %s | pr_title: %s | security_risk: %s | confidence: %s",
-                final_state.get("agent_trace", []),
+                agent_trace,
                 pr_title,
-                final_state.get("security_risk_score"),
+                security_risk_score,
                 confidence_score,
             )
         else:
@@ -523,9 +542,13 @@ def process_failed_workflow(self, message: dict) -> dict:
             root_cause = analysis.get("root_cause", "")
             suggested_yaml = analysis.get("fixed_yaml")
             pr_title = analysis.get("pr_title", "")
+            pr_description = None
             failure_category = None
             confidence_score = None
             confidence_reasoning = None
+            security_risk_score = None
+            security_findings = None
+            agent_trace = None
 
         if not suggested_yaml and root_cause:
             logger.warning(
@@ -560,6 +583,11 @@ def process_failed_workflow(self, message: dict) -> dict:
                 failure_category=failure_category,
                 confidence_score=0,
                 confidence_reasoning="No valid YAML suggestion was produced.",
+                security_risk_score=security_risk_score,
+                security_findings=security_findings,
+                pr_title=pr_title,
+                pr_description=pr_description,
+                agent_trace=agent_trace,
             )
             _publish_event("remediation_updated", {
                 "id": str(remediation_id),
@@ -582,6 +610,11 @@ def process_failed_workflow(self, message: dict) -> dict:
             failure_category=failure_category,
             confidence_score=confidence_score,
             confidence_reasoning=confidence_reasoning,
+            security_risk_score=security_risk_score,
+            security_findings=security_findings,
+            pr_title=pr_title,
+            pr_description=pr_description,
+            agent_trace=agent_trace,
         )
         _publish_event("remediation_updated", {
             "id": str(remediation_id),
