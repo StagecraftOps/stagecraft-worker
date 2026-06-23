@@ -18,6 +18,7 @@ cost or latency.
 """
 import asyncio
 import logging
+import re
 import time
 
 import boto3
@@ -102,9 +103,16 @@ _TOOL_CONFIG = {
 _SYSTEM_PROMPT = """You are aGorA's CI/CD investigator. Answer the user's question by calling \
 search_remediations (and, only if needed, get_run_logs / get_workflow_yaml) to gather evidence \
 from past pipeline failures, then reason across what you find — spot patterns, compare repos, \
-explain trends. Always cite which remediation_id(s) your conclusions are based on. If the \
-evidence doesn't support a confident answer, say so plainly instead of guessing. You have at \
-most {max_rounds} tool calls — use them deliberately."""
+explain trends. If the evidence doesn't support a confident answer, say so plainly instead of \
+guessing. You have at most {max_rounds} tool calls — use them deliberately.
+
+When citing evidence, refer to it the way a person would talk about it — "agora-api's CI build \
+step (analyzed 2026-06-20)" — never a bare remediation_id or UUID. If failure_category comes back \
+UNKNOWN for everything relevant, say the categorization is missing/unreliable rather than citing \
+UNKNOWN as if it were an answer.
+
+Respond with ONLY your final answer in plain prose. Do not include any visible reasoning, \
+<thinking> tags, or scratchpad text — think privately and output just the conclusion."""
 
 
 def _bedrock_client():
@@ -113,6 +121,15 @@ def _bedrock_client():
         region_name=settings.AWS_REGION,
         **_bedrock_boto3_kwargs(),
     )
+
+
+_THINKING_BLOCK = re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_thinking(text: str) -> str:
+    """Drop any <thinking>...</thinking> scratchpad the model emits despite
+    being told not to — prompting alone isn't reliable enough to skip this."""
+    return _THINKING_BLOCK.sub("", text).strip()
 
 
 def investigate(question: str) -> dict:
@@ -156,7 +173,7 @@ def investigate(question: str) -> dict:
         if stop_reason != "tool_use":
             for block in assistant_content:
                 if "text" in block:
-                    return {"answer": block["text"].strip(), "tool_calls": tool_calls}
+                    return {"answer": _strip_thinking(block["text"]), "tool_calls": tool_calls}
             return {"answer": "", "tool_calls": tool_calls}
 
         tool_results = []
@@ -189,7 +206,7 @@ def investigate(question: str) -> dict:
     logger.warning("investigate: hit max rounds (%d) for question %r", _MAX_TOOL_ROUNDS, question)
     for block in assistant_content:
         if "text" in block:
-            return {"answer": block["text"].strip(), "tool_calls": tool_calls}
+            return {"answer": _strip_thinking(block["text"]), "tool_calls": tool_calls}
     return {
         "answer": "I gathered some evidence but ran out of investigation steps before reaching a conclusion.",
         "tool_calls": tool_calls,
