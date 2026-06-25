@@ -179,11 +179,30 @@ def _heuristic_yaml_fix(
         logger.info("_heuristic_yaml_fix applied deterministic python-version fix")
     return normalized if ok else None
 
+def _make_redis_sync():
+    from urllib.parse import urlparse, urlencode, parse_qs, urlunparse
+    import redis as redis_sync
+    from redis.connection import ConnectionPool, SSLConnection
+
+    url = settings.REDIS_URL
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query, keep_blank_values=True)
+    qs.pop("ssl_cert_reqs", None)
+    clean_url = urlunparse(parsed._replace(query=urlencode(qs, doseq=True)))
+
+    if clean_url.startswith("rediss://"):
+        pool = ConnectionPool.from_url(
+            clean_url, connection_class=SSLConnection, ssl_cert_reqs="none"
+        )
+    else:
+        pool = ConnectionPool.from_url(clean_url)
+    return redis_sync.Redis(connection_pool=pool)
+
+
 def _publish_event(event_type: str, data: dict) -> None:
     """Fire-and-forget Redis publish so WebSocket clients get live updates."""
     try:
-        import redis as redis_sync
-        r = redis_sync.Redis.from_url(settings.REDIS_URL)
+        r = _make_redis_sync()
         r.publish(REDIS_EVENTS_CHANNEL, json.dumps({"type": event_type, "data": data}))
         r.close()
     except Exception as exc:
