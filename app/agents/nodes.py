@@ -288,12 +288,9 @@ def generate_fix(state: AgentState) -> AgentState:
     client = BedrockRemediationClient()
     original = state["workflow_yaml"]
 
-    # Compress the workflow YAML with Headroom before building prompts.
-    try:
-        from headroom import compress
-        compressed_yaml = compress(original)
-    except Exception:
-        compressed_yaml = original
+    # Workflow YAMLs are almost always short; cap at 8000 chars to avoid
+    # token bloat if someone commits a monster monorepo workflow file.
+    compressed_yaml = original[:8000] if len(original) > 8000 else original
 
     # Build few-shot context from fix_memories accepted examples.
     fix_examples = state.get("fix_examples") or []

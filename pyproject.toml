@@ -16,7 +16,6 @@ dependencies = [
   "langchain-aws>=1.0.0,<2.0.0",
   "mcp>=1.0.0,<2.0.0",
   "pyyaml>=6.0,<7.0",
-  "headroom>=0.2.7,<1.0.0",
 ]
 
 [project.optional-dependencies]
