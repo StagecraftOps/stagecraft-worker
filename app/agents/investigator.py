@@ -132,16 +132,25 @@ def _strip_thinking(text: str) -> str:
     return _THINKING_BLOCK.sub("", text).strip()
 
 
-def investigate(question: str) -> dict:
+def investigate(question: str, history: list[dict] | None = None) -> dict:
     """Run the bounded tool-calling loop and return the final answer + trace.
 
-    Returns {"answer": str, "tool_calls": list[dict]} — tool_calls is a
-    record of every search_remediations/get_run_logs/get_workflow_yaml call
-    made, kept so the chat endpoint can surface "sources" the same way the
-    single-shot RAG path already does.
+    `history` is a list of {"role": "user"|"assistant", "content": str} dicts
+    from prior turns in the same conversation. They are prepended to the
+    Bedrock messages so the model has context across questions.
+
+    Returns {"answer": str, "tool_calls": list[dict]}.
     """
     client = _bedrock_client()
-    messages = [
+
+    prior: list[dict] = []
+    for turn in (history or []):
+        prior.append({
+            "role": turn["role"],
+            "content": [{"text": turn["content"]}],
+        })
+
+    messages = prior + [
         {
             "role": "user",
             "content": [{"text": f"{_SYSTEM_PROMPT.format(max_rounds=_MAX_TOOL_ROUNDS)}\n\nQUESTION: {question}"}],

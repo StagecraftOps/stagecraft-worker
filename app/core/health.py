@@ -53,6 +53,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
             question = payload["question"]
+            history = payload.get("history") or []
         except (json.JSONDecodeError, KeyError):
             self._respond(400, b"invalid request body")
             return
@@ -60,7 +61,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
         try:
             from app.agents.investigator import investigate
 
-            result = investigate(question)
+            result = investigate(question, history=history)
             self._respond_json(200, result)
         except Exception as exc:
             logger.exception("investigate failed for question %r: %s", question, exc)
