@@ -152,6 +152,11 @@ def investigate(question: str, history: list[dict] | None = None) -> dict:
             "content": [{"text": turn["content"]}],
         })
 
+    # Bedrock requires conversations to start with a user message.
+    # History truncation can leave a leading assistant turn — drop it.
+    while prior and prior[0]["role"] != "user":
+        prior.pop(0)
+
     messages = prior + [
         {
             "role": "user",
