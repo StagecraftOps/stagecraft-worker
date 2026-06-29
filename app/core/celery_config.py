@@ -14,6 +14,8 @@ task_routes = {
     "app.tasks.remediation.process_failed_workflow": {"queue": "remediation"},
     "app.tasks.remediation.upsert_workflow_run_task": {"queue": "remediation"},
     "app.tasks.remediation.backfill_org_runs_task": {"queue": "remediation"},
+    "app.tasks.remediation.register_app_installation_task": {"queue": "remediation"},
+    "app.tasks.remediation.backfill_embeddings_task": {"queue": "remediation"},
 }
 
 task_acks_late = True
