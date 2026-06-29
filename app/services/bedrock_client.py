@@ -11,10 +11,13 @@ from app.core.config import settings
 def _bedrock_boto3_kwargs() -> dict:
     """Return boto3 keyword args for Bedrock clients.
 
-    If BEDROCK_CROSS_ACCOUNT_ROLE_ARN is configured, assumes that role first
-    (cross-account access to company Bedrock) and returns short-lived credentials.
-    Otherwise returns an empty dict so boto3 uses the pod's IRSA role directly.
+    Priority order:
+    1. BEDROCK_API_KEY (ABSK bearer token) — dummy IAM creds used; token injected later via _apply_bedrock_api_key.
+    2. BEDROCK_CROSS_ACCOUNT_ROLE_ARN — assumes the role and returns short-lived creds.
+    3. Empty dict — boto3 uses the pod's IRSA role directly.
     """
+    if settings.BEDROCK_API_KEY:
+        return {"aws_access_key_id": "dummy", "aws_secret_access_key": "dummy"}
     if not settings.BEDROCK_CROSS_ACCOUNT_ROLE_ARN:
         return {}
     sts = boto3.client("sts", region_name=settings.AWS_REGION)
@@ -31,6 +34,18 @@ def _bedrock_boto3_kwargs() -> dict:
     }
 
 
+def _apply_bedrock_api_key(client) -> None:
+    """If BEDROCK_API_KEY is set, inject it as a Bearer token on every Bedrock request."""
+    if not settings.BEDROCK_API_KEY:
+        return
+    api_key = settings.BEDROCK_API_KEY
+
+    def _inject_bearer(request, **kwargs):
+        request.headers["Authorization"] = f"Bearer {api_key}"
+
+    client.meta.events.register("before-send.bedrock-runtime", _inject_bearer)
+
+
 class BedrockRemediationClient:
     """Calls AWS Bedrock (Amazon Nova) to analyze CI failures and produce fixes.
 
@@ -45,6 +60,7 @@ class BedrockRemediationClient:
             region_name=settings.AWS_REGION,
             **_bedrock_boto3_kwargs(),
         )
+        _apply_bedrock_api_key(self._client)
         self._model_id = settings.BEDROCK_MODEL_ID
 
     def _build_prompt(

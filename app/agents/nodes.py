@@ -10,7 +10,7 @@ import yaml
 from app.core.config import settings
 from app.agents.state import AgentState
 from app.services import mcp_client
-from app.services.bedrock_client import _bedrock_boto3_kwargs
+from app.services.bedrock_client import _bedrock_boto3_kwargs, _apply_bedrock_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +26,13 @@ _GITHUB_TOOLS = {"get_workflow_yaml", "get_run_logs"}
 # ---------------------------------------------------------------------------
 
 def _bedrock_client():
-    return boto3.client(
+    client = boto3.client(
         "bedrock-runtime",
         region_name=settings.AWS_REGION,
         **_bedrock_boto3_kwargs(),
     )
+    _apply_bedrock_api_key(client)
+    return client
 
 
 def _converse(prompt: str, max_tokens: int = 2048, temperature: float = 0.0) -> str:

@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # Leave empty to call Bedrock directly with the pod's IRSA role (same account).
     BEDROCK_CROSS_ACCOUNT_ROLE_ARN: str = ""
 
+    # Long-lived Bedrock API key (ABSK… format).
+    # When set, overrides IAM/role auth — injected as a Bearer token on every Bedrock call.
+    BEDROCK_API_KEY: str = ""
+
     GITHUB_TOKEN: str = ""
 
     GITHUB_APP_ID: str = ""
