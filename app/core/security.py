@@ -11,7 +11,7 @@ from cryptography.fernet import Fernet, InvalidToken
 
 from app.core.config import settings
 
-_FERNET_KDF_LABEL = b"pipelineiq-token-encryption-v1:"
+_FERNET_KDF_LABEL = b"stagecraft-token-encryption-v1:"
 
 
 def _get_fernet() -> Fernet:

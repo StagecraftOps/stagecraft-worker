@@ -92,7 +92,7 @@ def test_worker_decrypt_key_mismatch_raises(mock_boto):
     from app.core.security import decrypt_token
 
     key_a = base64.urlsafe_b64encode(
-        hashlib.sha256(b"pipelineiq-token-encryption-v1:key-A").digest()
+        hashlib.sha256(b"stagecraft-token-encryption-v1:key-A").digest()
     )
     fernet_a = Fernet(key_a)
     encrypted = fernet_a.encrypt(b"ghp_token").decode()

@@ -8,8 +8,8 @@ os.environ.setdefault("SECRET_KEY", "test-secret-only")
 
 def _state() -> dict:
     return {
-        "repo_owner": "aGora-Ops",
-        "repo_name": "agora-api",
+        "repo_owner": "Stagecraft-Ops",
+        "repo_name": "stagecraft-api",
         "workflow_file": ".github/workflows/ci.yml",
         "workflow_yaml": "name: CI\njobs: {}",
         "logs": "Python version 99 was not found",

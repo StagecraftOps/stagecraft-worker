@@ -15,9 +15,9 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-_SUBJECT = "aGorA suggested a fix for {repo}"
+_SUBJECT = "Stagecraft suggested a fix for {repo}"
 
-_BODY_TEXT = """aGorA analyzed a failed workflow run in {repo} and suggested a fix.
+_BODY_TEXT = """Stagecraft analyzed a failed workflow run in {repo} and suggested a fix.
 
 Failure category: {category}
 Root cause: {root_cause}
@@ -28,7 +28,7 @@ Review and raise a PR for this fix:
 This is an automated notification — reply-to is not monitored."""
 
 _BODY_HTML = """<html><body>
-<p>aGorA analyzed a failed workflow run in <strong>{repo}</strong> and suggested a fix.</p>
+<p>Stagecraft analyzed a failed workflow run in <strong>{repo}</strong> and suggested a fix.</p>
 <p><strong>Failure category:</strong> {category}<br>
 <strong>Root cause:</strong> {root_cause}</p>
 <p><a href="{link}">Review and raise a PR for this fix</a></p>

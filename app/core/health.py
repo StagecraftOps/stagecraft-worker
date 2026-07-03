@@ -6,7 +6,7 @@ http.server on a daemon thread alongside the real process — no new
 dependency, no interference with Celery's own event loop / the consumer's
 polling loop. /internal/investigate piggybacks on the same server rather
 than introducing FastAPI/uvicorn just for one synchronous endpoint:
-agora-api's chat.py calls it directly (not via Celery/SQS) because a chat
+stagecraft-api's chat.py calls it directly (not via Celery/SQS) because a chat
 request needs a request/response cycle, not async dispatch.
 """
 import json

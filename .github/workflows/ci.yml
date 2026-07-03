@@ -6,9 +6,6 @@ on:
   pull_request:
     branches: [main, develop]
 
-env:
-  IMAGE_NAME: yampss/stagecraft-worker
-
 jobs:
   lint-and-test:
     name: Lint and Test
@@ -49,7 +46,7 @@ jobs:
           file: Dockerfile
           push: true
           tags: |
-            yampss/stagecraft-worker:latest
-            yampss/stagecraft-worker:${{ github.sha }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/stagecraft-worker:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/stagecraft-worker:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

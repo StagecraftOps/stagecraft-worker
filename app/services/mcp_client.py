@@ -15,6 +15,7 @@ _MCP_GITHUB_SERVER_TOOLS = {
     "get_workflow_yaml",
     "get_run_logs",
     "search_remediations",
+    "get_pull_request_diff",
 }
 
 

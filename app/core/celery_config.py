@@ -16,6 +16,15 @@ task_routes = {
     "app.tasks.remediation.backfill_org_runs_task": {"queue": "remediation"},
     "app.tasks.remediation.register_app_installation_task": {"queue": "remediation"},
     "app.tasks.remediation.backfill_embeddings_task": {"queue": "remediation"},
+    "app.tasks.dependency_graph.build_dependency_graph_task": {"queue": "remediation"},
+    "app.tasks.job_timing.sync_job_timings_task": {"queue": "remediation"},
+    "app.tasks.standardization.run_template_diff_task": {"queue": "remediation"},
+    "app.tasks.standardization.run_pattern_frequency_task": {"queue": "remediation"},
+    "app.tasks.pr_review.process_pull_request": {"queue": "remediation"},
+    "app.tasks.governance.extract_governance_requirements_task": {"queue": "remediation"},
+    "app.tasks.governance.run_governance_analysis_task": {"queue": "remediation"},
+    "app.tasks.optimization.run_optimization_analysis_task": {"queue": "remediation"},
+    "app.tasks.knowledge_graph.build_knowledge_graph_task": {"queue": "remediation"},
 }
 
 task_acks_late = True

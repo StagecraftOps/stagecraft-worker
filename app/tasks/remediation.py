@@ -38,7 +38,7 @@ _sync_engine = create_engine(
 )
 SyncSessionLocal = sessionmaker(bind=_sync_engine, autocommit=False, autoflush=False)
 
-REDIS_EVENTS_CHANNEL = "agora:events"
+REDIS_EVENTS_CHANNEL = "stagecraft:events"
 
 
 def _compress_logs(text: str, max_lines: int = 200) -> str:
@@ -541,6 +541,28 @@ def _ingest_embedding(
     )
     session.commit()
 
+def _trigger_job_timing_sync(workflow_run_id: uuid.UUID, message: dict) -> None:
+    """Fire-and-forget FR-2 job-timing sync once a run completes.
+
+    Lazy-imported to avoid a circular import (job_timing.py imports
+    SyncSessionLocal/_get_github_token_for_org from this module). Never
+    allowed to affect the caller's own success/failure.
+    """
+    try:
+        from app.tasks.job_timing import sync_job_timings_task
+
+        sync_job_timings_task.delay({
+            "workflow_run_id": str(workflow_run_id),
+            "repo_owner": message["repo_owner"],
+            "repo_name": message["repo_name"],
+            "run_id": message["run_id"],
+            "head_sha": message.get("head_sha", ""),
+            "workflow_file": message.get("workflow_file", ""),
+        })
+    except Exception as exc:
+        logger.warning("Failed to enqueue job-timing sync for run %s: %s", message.get("run_id"), exc)
+
+
 @app.task(bind=True, max_retries=3, default_retry_delay=30)
 def upsert_workflow_run_task(self, message: dict) -> dict:
     """Persist/update a workflow_run row for non-failure events."""
@@ -555,6 +577,8 @@ def upsert_workflow_run_task(self, message: dict) -> dict:
             "org_login": message["repo_owner"],
             "repo_name": message["repo_name"],
         })
+        if message.get("status") == "completed":
+            _trigger_job_timing_sync(run_uuid, message)
         return {"status": "synced", "workflow_run_id": str(run_uuid)}
     except Exception as exc:
         logger.exception("Failed to sync workflow run %s: %s", message.get("run_id"), exc)
@@ -596,6 +620,7 @@ def process_failed_workflow(self, message: dict) -> dict:
             "org_login": repo_owner,
             "repo_name": repo_name,
         })
+        _trigger_job_timing_sync(workflow_run_id, message)
 
         remediation_id = _create_remediation_record(session, workflow_run_id, message, "analyzing")
         _publish_event("remediation_created", {"id": str(remediation_id), "status": "analyzing"})

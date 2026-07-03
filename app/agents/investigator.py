@@ -7,7 +7,7 @@ triggered on demand when a question needs reasoning across MULTIPLE past
 runs rather than a single nearest-neighbor retrieval. It is read-only and
 never reaches GitHub write tools.
 
-Tool surface (all served by agora-mcp-github over the same in-cluster SSE
+Tool surface (all served by stagecraft-mcp over the same in-cluster SSE
 connection the remediation pipeline already uses):
   - search_remediations: query remediation history (semantic or filtered)
   - get_workflow_yaml / get_run_logs: pull a SPECIFIC run's raw data if the
@@ -100,13 +100,13 @@ _TOOL_CONFIG = {
     ]
 }
 
-_SYSTEM_PROMPT = """You are aGorA's CI/CD investigator. Answer the user's question by calling \
+_SYSTEM_PROMPT = """You are Stagecraft's CI/CD investigator. Answer the user's question by calling \
 search_remediations (and, only if needed, get_run_logs / get_workflow_yaml) to gather evidence \
 from past pipeline failures, then reason across what you find — spot patterns, compare repos, \
 explain trends. If the evidence doesn't support a confident answer, say so plainly instead of \
 guessing. You have at most {max_rounds} tool calls — use them deliberately.
 
-When citing evidence, refer to it the way a person would talk about it — "agora-api's CI build \
+When citing evidence, refer to it the way a person would talk about it — "stagecraft-api's CI build \
 step (analyzed 2026-06-20)" — never a bare remediation_id or UUID. If failure_category comes back \
 UNKNOWN for everything relevant, say the categorization is missing/unreliable rather than citing \
 UNKNOWN as if it were an answer.

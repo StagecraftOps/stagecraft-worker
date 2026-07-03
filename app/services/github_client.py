@@ -71,6 +71,12 @@ class GitHubRemediationClient:
         remaining = response.headers.get("X-RateLimit-Remaining")
         return data.get("workflow_runs", []), int(remaining) if remaining is not None else None
 
+    def get_run_jobs(self, owner: str, repo: str, run_id: int) -> list[dict]:
+        """Return per-job timing/status for a run (GitHub Actions Jobs API)."""
+        response = self._client.get(f"/repos/{owner}/{repo}/actions/runs/{run_id}/jobs")
+        response.raise_for_status()
+        return response.json().get("jobs", [])
+
     def get_run_logs(self, owner: str, repo: str, run_id: int) -> str:
         """
         Download the log archive for a workflow run and return the last 300 lines
@@ -97,6 +103,43 @@ class GitHubRemediationClient:
 
         last_300 = all_lines[-300:] if len(all_lines) > 300 else all_lines
         return "\n".join(last_300)
+
+    def get_pull_request_diff(self, owner: str, repo: str, pr_number: int) -> str:
+        """Return the unified diff for a pull request."""
+        response = self._client.get(
+            f"/repos/{owner}/{repo}/pulls/{pr_number}",
+            headers={
+                "Authorization": f"Bearer {self._token}",
+                "Accept": "application/vnd.github.diff",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+        )
+        response.raise_for_status()
+        return response.text
+
+    def get_repo_tree(self, owner: str, repo: str, ref: str) -> list[dict]:
+        """Return the full recursive file tree at ref: [{"path": ..., "type": "blob"|"tree"}, ...]."""
+        data = self._get(f"/repos/{owner}/{repo}/git/trees/{ref}", params={"recursive": "1"})
+        return data.get("tree", []) if isinstance(data, dict) else []
+
+    def get_file_content(self, owner: str, repo: str, path: str, ref: str) -> str | None:
+        """Return the raw text content of a file at ref, or None if it doesn't exist."""
+        try:
+            response = self._client.get(
+                f"/repos/{owner}/{repo}/contents/{path}",
+                params={"ref": ref},
+                headers={
+                    "Authorization": f"Bearer {self._token}",
+                    "Accept": "application/vnd.github.raw+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                },
+            )
+            if response.status_code == 404:
+                return None
+            response.raise_for_status()
+            return response.text
+        except httpx.HTTPStatusError:
+            return None
 
     def get_workflow_yaml(self, owner: str, repo: str, path: str, ref: str) -> str:
         """Return the raw YAML content of a workflow file."""

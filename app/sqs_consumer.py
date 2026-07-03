@@ -19,12 +19,18 @@ import boto3
 
 from app.core.config import settings
 from app.core.health import mark_ready, start_health_server
+from app.tasks.dependency_graph import build_dependency_graph_task
 from app.tasks.remediation import (
     backfill_org_runs_task,
     process_failed_workflow,
     register_app_installation_task,
     upsert_workflow_run_task,
 )
+from app.tasks.governance import extract_governance_requirements_task, run_governance_analysis_task
+from app.tasks.knowledge_graph import build_knowledge_graph_task
+from app.tasks.optimization import run_optimization_analysis_task
+from app.tasks.pr_review import process_pull_request
+from app.tasks.standardization import run_pattern_frequency_task, run_template_diff_task
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -48,6 +54,38 @@ def _dispatch(message: dict) -> None:
 
     if event_type == "app_installation":
         register_app_installation_task.delay(message)
+        return
+
+    if event_type == "build_dependency_graph":
+        build_dependency_graph_task.delay(message)
+        return
+
+    if event_type == "run_template_diff":
+        run_template_diff_task.delay(message)
+        return
+
+    if event_type == "run_pattern_frequency":
+        run_pattern_frequency_task.delay(message)
+        return
+
+    if event_type == "pull_request":
+        process_pull_request.delay(message)
+        return
+
+    if event_type == "extract_governance_requirements":
+        extract_governance_requirements_task.delay(message)
+        return
+
+    if event_type == "run_governance_analysis":
+        run_governance_analysis_task.delay(message)
+        return
+
+    if event_type == "run_optimization_analysis":
+        run_optimization_analysis_task.delay(message)
+        return
+
+    if event_type == "build_knowledge_graph":
+        build_knowledge_graph_task.delay(message)
         return
 
     logger.warning("Unknown event_type in SQS message, dropping: %r", event_type)
