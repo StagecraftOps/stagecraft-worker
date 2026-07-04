@@ -31,7 +31,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       AWS_REGION: ${AWS_REGION:-us-east-1}
       SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
-      BEDROCK_MODEL_ID: amazon.nova-pro-v1:0
+      BEDROCK_MODEL_ID: anthropic.claude-sonnet-4-6
       SECRET_KEY: ${SECRET_KEY:-local-dev-secret-key-change-in-prod}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
@@ -52,7 +52,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       AWS_REGION: ${AWS_REGION:-us-east-1}
       SQS_QUEUE_URL: ${SQS_QUEUE_URL:-}
-      BEDROCK_MODEL_ID: amazon.nova-pro-v1:0
+      BEDROCK_MODEL_ID: anthropic.claude-sonnet-4-6
       SECRET_KEY: ${SECRET_KEY:-local-dev-secret-key-change-in-prod}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}

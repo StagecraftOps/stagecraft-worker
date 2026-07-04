@@ -7,7 +7,7 @@ class Settings(BaseSettings):
 
     AWS_REGION: str = "us-east-1"
     SQS_QUEUE_URL: str = "https://sqs.us-east-1.amazonaws.com/123456789/stagecraft-webhooks"
-    BEDROCK_MODEL_ID: str = "amazon.nova-pro-v1:0"
+    BEDROCK_MODEL_ID: str = "anthropic.claude-sonnet-4-6"
 
     # Cross-account Bedrock access (Bedrock account).
     # When set, the worker assumes this role before every Bedrock call.
