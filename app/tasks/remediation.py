@@ -25,7 +25,11 @@ from app.core.celery_app import app
 from app.core.config import settings
 from app.core.security import decrypt_token
 from app.services.bedrock_client import BedrockRemediationClient
-from app.services.github_app import get_installation_token, github_app_configured
+from app.services.github_app import (
+    get_installation_id_for_org,
+    get_installation_token,
+    github_app_configured,
+)
 from app.services.github_client import GitHubRemediationClient
 
 logger = logging.getLogger(__name__)
@@ -215,10 +219,21 @@ def _get_github_token_for_org(session: Session, org_login: str) -> str:
             text("SELECT installation_id FROM organizations WHERE login = :login LIMIT 1"),
             {"login": org_login},
         ).fetchone()
-        if row and row[0]:
+        installation_id = row[0] if row else None
+
+        # No organizations row yet (e.g. the App was installed but nobody has
+        # logged in via OAuth to own an org record) — resolve the installation
+        # straight from GitHub so we can still mint a token.
+        if not installation_id:
+            import asyncio
+            installation_id = asyncio.get_event_loop().run_until_complete(
+                get_installation_id_for_org(org_login)
+            )
+
+        if installation_id:
             import asyncio
             return asyncio.get_event_loop().run_until_complete(
-                get_installation_token(row[0])
+                get_installation_token(installation_id)
             )
 
     # Fall back to the org owner's OAuth token (pre-App path).
