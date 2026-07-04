@@ -10,6 +10,7 @@ Architecture (suggestion-engine model):
   3. After analysis, status becomes 'analyzed' and suggested_yaml is populated.
      The user reviews in the dashboard and clicks "Raise PR" to create the PR.
 """
+import asyncio
 import json
 import logging
 import time
@@ -224,17 +225,18 @@ def _get_github_token_for_org(session: Session, org_login: str) -> str:
         # No organizations row yet (e.g. the App was installed but nobody has
         # logged in via OAuth to own an org record) — resolve the installation
         # straight from GitHub so we can still mint a token.
+        #
+        # asyncio.run (not get_event_loop().run_until_complete): these run in a
+        # sync Celery worker process with no event loop of its own. On Python
+        # 3.12 get_event_loop() raises "no current event loop in thread" when
+        # none is set, which made every token-minting task (dependency graph,
+        # job timing, remediation) fail on first attempt and only pass on a
+        # lucky retry. asyncio.run creates and tears down its own loop reliably.
         if not installation_id:
-            import asyncio
-            installation_id = asyncio.get_event_loop().run_until_complete(
-                get_installation_id_for_org(org_login)
-            )
+            installation_id = asyncio.run(get_installation_id_for_org(org_login))
 
         if installation_id:
-            import asyncio
-            return asyncio.get_event_loop().run_until_complete(
-                get_installation_token(installation_id)
-            )
+            return asyncio.run(get_installation_token(installation_id))
 
     # Fall back to the org owner's OAuth token (pre-App path).
     row = session.execute(
