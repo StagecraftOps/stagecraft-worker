@@ -1,7 +1,18 @@
+import ssl
+
 from app.core.config import settings
 
 broker_url = settings.REDIS_URL
 result_backend = settings.REDIS_URL
+
+# rediss:// (TLS) requires ssl_cert_reqs to be set explicitly — unlike
+# redis-py, Celery's redis transport won't default it, and raises at
+# startup ("A rediss:// URL must have parameter ssl_cert_reqs...") if it's
+# missing from both the URL and these settings. No verification, matching
+# the redis-py client's own ssl_cert_reqs="none" in tasks/remediation.py.
+if broker_url.startswith("rediss://"):
+    broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
+    redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
 
 task_serializer = "json"
 accept_content = ["json"]
