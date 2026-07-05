@@ -16,7 +16,9 @@ from app.agents.registry import get_agent_graph
 from app.analysis.bottleneck_detector import detect_bottlenecks
 from app.analysis.parallelization_advisor import find_parallelization_candidates
 from app.core.celery_app import app
+from app.core.config import settings
 from app.services.github_client import GitHubRemediationClient
+from app.services.neo4j_client import get_driver
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
 
 logger = logging.getLogger(__name__)
@@ -25,6 +27,33 @@ logger = logging.getLogger(__name__)
 def _job_name_from_key(external_key: str) -> str:
     # job external_key format: "job::<workflow_file>::<job_id>"
     return external_key.rsplit("::", 1)[-1]
+
+
+def _fetch_job_edges_neo4j(org_login: str, repo_name: str, workflow_file: str, rel: str) -> list[tuple[str, str]]:
+    """Cypher equivalent of the graph_edges/graph_nodes JOIN below. No need to
+    first look up the latest completed graph_id — Neo4j nodes carry org_login/
+    repo_name/workflow_file directly, so this is a single MATCH."""
+    with get_driver().session() as neo_session:
+        result = neo_session.run(
+            f"""
+            MATCH (src:GraphNode {{org_login: $org, repo_name: $repo, workflow_file: $wf}})
+                  -[:{rel}]->
+                  (tgt:GraphNode {{org_login: $org, repo_name: $repo, workflow_file: $wf}})
+            RETURN src.external_key AS source_key, tgt.external_key AS target_key
+            """,
+            org=org_login, repo=repo_name, wf=workflow_file,
+        )
+        return [(_job_name_from_key(r["source_key"]), _job_name_from_key(r["target_key"])) for r in result]
+
+
+def _has_dependency_graph_neo4j(org_login: str, repo_name: str, workflow_file: str) -> bool:
+    with get_driver().session() as neo_session:
+        record = neo_session.run(
+            "MATCH (n:GraphNode:Workflow {org_login: $org, repo_name: $repo, workflow_file: $wf}) "
+            "RETURN count(n) AS c",
+            org=org_login, repo=repo_name, wf=workflow_file,
+        ).single()
+        return bool(record and record["c"] > 0)
 
 
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
@@ -37,6 +66,11 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
     session = SyncSessionLocal()
     github: GitHubRemediationClient | None = None
     try:
+        # The graphs row (Postgres build metadata) is always maintained
+        # regardless of GRAPH_BACKEND — dual-write is additive, it never
+        # disables the Postgres write. optimization_recommendations.graph_id
+        # references it either way; only the needs/needs_output edge lookup
+        # below branches on which store actually serves them.
         graph_row = session.execute(
             text(
                 """
@@ -51,35 +85,41 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
             return {"status": "no_graph", "org_login": org_login, "repo_name": repo_name}
         graph_id = graph_row[0]
 
-        needs_rows = session.execute(
-            text(
-                """
-                SELECT src.external_key, tgt.external_key
-                FROM graph_edges e
-                JOIN graph_nodes src ON src.id = e.source_node_id
-                JOIN graph_nodes tgt ON tgt.id = e.target_node_id
-                WHERE e.graph_id = :graph_id AND e.edge_type = 'needs'
-                  AND src.workflow_file = :wf AND tgt.workflow_file = :wf
-                """
-            ),
-            {"graph_id": str(graph_id), "wf": workflow_file},
-        ).fetchall()
-        needs_edges = [(_job_name_from_key(s), _job_name_from_key(t)) for s, t in needs_rows]
+        if settings.GRAPH_BACKEND == "neo4j":
+            if not _has_dependency_graph_neo4j(org_login, repo_name, workflow_file):
+                return {"status": "no_graph", "org_login": org_login, "repo_name": repo_name}
+            needs_edges = _fetch_job_edges_neo4j(org_login, repo_name, workflow_file, "NEEDS")
+            needs_output_edges = _fetch_job_edges_neo4j(org_login, repo_name, workflow_file, "NEEDS_OUTPUT")
+        else:
+            needs_rows = session.execute(
+                text(
+                    """
+                    SELECT src.external_key, tgt.external_key
+                    FROM graph_edges e
+                    JOIN graph_nodes src ON src.id = e.source_node_id
+                    JOIN graph_nodes tgt ON tgt.id = e.target_node_id
+                    WHERE e.graph_id = :graph_id AND e.edge_type = 'needs'
+                      AND src.workflow_file = :wf AND tgt.workflow_file = :wf
+                    """
+                ),
+                {"graph_id": str(graph_id), "wf": workflow_file},
+            ).fetchall()
+            needs_edges = [(_job_name_from_key(s), _job_name_from_key(t)) for s, t in needs_rows]
 
-        output_rows = session.execute(
-            text(
-                """
-                SELECT src.external_key, tgt.external_key
-                FROM graph_edges e
-                JOIN graph_nodes src ON src.id = e.source_node_id
-                JOIN graph_nodes tgt ON tgt.id = e.target_node_id
-                WHERE e.graph_id = :graph_id AND e.edge_type = 'needs_output'
-                  AND src.workflow_file = :wf AND tgt.workflow_file = :wf
-                """
-            ),
-            {"graph_id": str(graph_id), "wf": workflow_file},
-        ).fetchall()
-        needs_output_edges = [(_job_name_from_key(s), _job_name_from_key(t)) for s, t in output_rows]
+            output_rows = session.execute(
+                text(
+                    """
+                    SELECT src.external_key, tgt.external_key
+                    FROM graph_edges e
+                    JOIN graph_nodes src ON src.id = e.source_node_id
+                    JOIN graph_nodes tgt ON tgt.id = e.target_node_id
+                    WHERE e.graph_id = :graph_id AND e.edge_type = 'needs_output'
+                      AND src.workflow_file = :wf AND tgt.workflow_file = :wf
+                    """
+                ),
+                {"graph_id": str(graph_id), "wf": workflow_file},
+            ).fetchall()
+            needs_output_edges = [(_job_name_from_key(s), _job_name_from_key(t)) for s, t in output_rows]
 
         # Historical job durations across the org (for the bottleneck baseline)
         # and the most recent run's per-job durations + critical path.
