@@ -20,9 +20,41 @@ from app.analysis.composite_action_resolver import resolve_runtime
 from app.analysis.dispatch_detector import find_dispatch_edges
 from app.analysis.orchestrator_parser import parse_orchestrator
 from app.analysis.workflow_parser import parse_workflow
+from app.core.config import settings
 from app.services.github_client import GitHubRemediationClient
+from app.services.neo4j_client import get_driver
 
 logger = logging.getLogger(__name__)
+
+# node_type values repo-scoped identity (two repos in the same org can
+# collide on the same external_key); everything else here is org-wide —
+# see the module docstring on _write_dependency_subgraph below.
+_REPO_SCOPED_TYPES = {"workflow", "job", "reusable_workflow", "composite_action"}
+
+_NODE_LABELS = {
+    "workflow": "Workflow",
+    "job": "Job",
+    "reusable_workflow": "ReusableWorkflow",
+    "composite_action": "CompositeAction",
+    "service": "Service",
+    "external_repo": "ExternalRepo",
+}
+
+_REL_TYPES = {
+    "needs": "NEEDS",
+    "needs_output": "NEEDS_OUTPUT",
+    "matrix_fanout": "MATRIX_FANOUT",
+    "uses_reusable": "USES_REUSABLE",
+    "uses_composite": "USES_COMPOSITE",
+    "orchestrator_service_dep": "ORCHESTRATOR_SERVICE_DEP",
+    "repository_dispatch": "REPOSITORY_DISPATCH",
+    "workflow_run_trigger": "WORKFLOW_RUN_TRIGGER",
+}
+
+
+def _identity_key(org_login: str, node_type: str, external_key: str, repo_name: str) -> str:
+    scope = repo_name if node_type in _REPO_SCOPED_TYPES else ""
+    return f"{org_login}::{scope}::{external_key}"
 
 
 def _list_workflow_files(tree: list[dict]) -> list[str]:
@@ -161,8 +193,79 @@ def build_graph_data(
     return list(deduped.values()), all_edges
 
 
-def persist_graph(session: Session, graph_id: uuid.UUID, nodes: list[dict], edges: list[dict]) -> None:
+def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: list[dict], edges: list[dict]) -> None:
+    """Cypher MERGE equivalent of the Postgres INSERTs below, scoped to this
+    repo's dependency-graph nodes only (workflow/job/reusable_workflow/
+    composite_action) — never touches Service/ExternalRepo (org-wide,
+    shared with the knowledge graph) or GovernanceRule/Failure/RuntimeMetric.
+    """
+    tx.run(
+        """
+        MATCH (n:GraphNode {org_login: $org, repo_name: $repo})
+        WHERE n.node_type IN ['workflow', 'job', 'reusable_workflow', 'composite_action']
+        DETACH DELETE n
+        """,
+        org=org_login, repo=repo_name,
+    )
+
+    key_to_identity: dict[str, str] = {}
+    for node in nodes:
+        node_type = node["node_type"]
+        if node_type not in _NODE_LABELS:
+            raise ValueError(f"Unknown node_type for Neo4j write: {node_type!r}")
+        label = _NODE_LABELS[node_type]
+        identity = _identity_key(org_login, node_type, node["external_key"], repo_name)
+        key_to_identity[node["external_key"]] = identity
+        # repo_name is org-wide-sentinel-less for repo-scoped types (the real
+        # repo_name), but for org-wide types (service/external_repo) there is
+        # no meaningful repo_name — store None so read-path queries scoped to
+        # a specific repo don't accidentally match them.
+        node_repo_name = repo_name if node_type in _REPO_SCOPED_TYPES else None
+        tx.run(
+            f"""
+            MERGE (n:GraphNode:{label} {{identity_key: $identity}})
+            ON CREATE SET n.id = randomUUID(), n.created_at = datetime()
+            SET n.org_login = $org, n.repo_name = $repo, n.node_type = $node_type,
+                n.external_key = $ekey, n.display_name = $dname,
+                n.workflow_file = $wf, n.job_id = $jid, n.metadata_json = $meta,
+                n.updated_at = datetime()
+            """,
+            identity=identity, org=org_login, repo=node_repo_name, node_type=node_type,
+            ekey=node["external_key"], dname=node["display_name"],
+            wf=node.get("workflow_file"), jid=node.get("job_id"),
+            meta=json.dumps(node["metadata"]) if node.get("metadata") is not None else None,
+        )
+
+    for edge in edges:
+        source_identity = key_to_identity.get(edge["source_key"])
+        target_identity = key_to_identity.get(edge["target_key"])
+        if not source_identity or not target_identity:
+            continue
+        edge_type = edge["edge_type"]
+        if edge_type not in _REL_TYPES:
+            raise ValueError(f"Unknown edge_type for Neo4j write: {edge_type!r}")
+        rel = _REL_TYPES[edge_type]
+        tx.run(
+            f"""
+            MATCH (s:GraphNode {{identity_key: $src}}), (t:GraphNode {{identity_key: $tgt}})
+            MERGE (s)-[e:{rel}]->(t)
+            ON CREATE SET e.id = randomUUID(), e.created_at = datetime()
+            SET e.confidence = $conf, e.metadata_json = $meta, e.updated_at = datetime()
+            """,
+            src=source_identity, tgt=target_identity,
+            conf=edge.get("confidence", "certain"),
+            meta=json.dumps(edge["metadata"]) if edge.get("metadata") is not None else None,
+        )
+
+
+def persist_graph(
+    session: Session, graph_id: uuid.UUID, org_login: str, repo_name: str, nodes: list[dict], edges: list[dict]
+) -> None:
     """Write parsed nodes/edges to graph_nodes/graph_edges and mark the graph completed."""
+    if settings.GRAPH_DUAL_WRITE_NEO4J:
+        with get_driver().session() as neo_session:
+            neo_session.execute_write(_write_dependency_subgraph_tx, org_login, repo_name, nodes, edges)
+
     now = datetime.now(timezone.utc)
     key_to_id: dict[str, uuid.UUID] = {}
 

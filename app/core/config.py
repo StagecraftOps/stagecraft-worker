@@ -62,5 +62,18 @@ class Settings(BaseSettings):
     BEDROCK_GUARDRAIL_ID: str = ""
     BEDROCK_GUARDRAIL_VERSION: str = ""
 
+    # Neo4j — dependency/knowledge graph storage + GraphRAG retrieval.
+    # GRAPH_DUAL_WRITE_NEO4J is additive only: the Postgres graph_nodes/
+    # graph_edges write path never gets disabled by this, Neo4j is purely a
+    # second write target while it's being verified. GRAPH_BACKEND controls
+    # which store optimization.py's dependency-edge lookups read from —
+    # leave both at their defaults (off/postgres) until dual-write is
+    # confirmed correct.
+    GRAPH_DUAL_WRITE_NEO4J: bool = False
+    GRAPH_BACKEND: str = "postgres"
+    NEO4J_URI: str = "bolt://stagecraft-neo4j.stagecraft.svc.cluster.local:7687"
+    NEO4J_USER: str = "neo4j"
+    NEO4J_PASSWORD: str = ""
+
 
 settings = Settings()
