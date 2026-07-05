@@ -39,6 +39,12 @@ task_routes = {
 }
 
 task_acks_late = True
+task_reject_on_worker_lost = True
 worker_prefetch_multiplier = 1
+
+# Redis's default visibility_timeout is 3600s — a task whose worker is killed
+# (e.g. a rolling deploy) would sit un-redelivered for up to an hour even
+# with acks_late. 10 minutes is generous for every task in this app.
+broker_transport_options = {"visibility_timeout": 600}
 
 result_expires = 86400

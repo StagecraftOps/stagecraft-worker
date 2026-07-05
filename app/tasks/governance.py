@@ -87,10 +87,19 @@ def extract_governance_requirements_task(self, message: dict) -> dict:
         session.close()
 
 
-@app.task(bind=True, max_retries=2, default_retry_delay=30)
+@app.task(bind=True, max_retries=2, default_retry_delay=30, acks_late=True, reject_on_worker_lost=True)
 def run_governance_analysis_task(self, message: dict) -> dict:
     """Diff every workflow file in a repo against a framework (Compliance Agent)
-    or an uploaded document (Governance Agent), writing compliance_findings."""
+    or an uploaded document (Governance Agent), writing compliance_findings.
+
+    Each workflow file's findings are replaced and committed individually
+    (rather than one commit at the end) so that a run spanning many files —
+    one Bedrock-backed agent invocation apiece — durably persists everything
+    completed so far even if the worker is killed mid-run (e.g. a deploy).
+    A killed run resumes as a brand-new task (see task_reject_on_worker_lost
+    in celery_config.py) and simply overwrites/redoes remaining files; nothing
+    already committed is lost.
+    """
     org_login = message["org_login"]
     repo_name = message["repo_name"]
     ref = message.get("ref") or "main"
@@ -110,24 +119,52 @@ def run_governance_analysis_task(self, message: dict) -> dict:
         finding_count = 0
 
         for path, content in workflow_contents.items():
-            if mode == "framework":
-                result = agent_graph.invoke({
-                    "repo_owner": org_login,
+            try:
+                if mode == "framework":
+                    result = agent_graph.invoke({
+                        "repo_owner": org_login,
+                        "repo_name": repo_name,
+                        "workflow_file": path,
+                        "workflow_yaml": content,
+                        "framework": framework,
+                        "agent_trace": [],
+                    })
+                else:
+                    result = agent_graph.invoke({
+                        "repo_owner": org_login,
+                        "repo_name": repo_name,
+                        "workflow_file": path,
+                        "workflow_yaml": content,
+                        "governance_document_id": document_id,
+                        "agent_trace": [],
+                    })
+            except Exception:
+                # One file's agent call failing (e.g. a transient Bedrock
+                # hiccup) shouldn't discard every other file already done in
+                # this run or abort the remaining ones — log and move on.
+                logger.exception(
+                    "Governance analysis failed for %s/%s file %s; skipping it", org_login, repo_name, path
+                )
+                continue
+
+            # Replace this file's prior findings for this mode so re-running
+            # (deliberately, or resuming after a kill) is idempotent instead
+            # of accumulating duplicate rows.
+            session.execute(
+                text(
+                    """
+                    DELETE FROM compliance_findings
+                    WHERE org_login = :org_login AND repo_name = :repo_name AND workflow_file = :workflow_file
+                      AND governance_document_id IS NOT DISTINCT FROM :document_id
+                    """
+                ),
+                {
+                    "org_login": org_login,
                     "repo_name": repo_name,
                     "workflow_file": path,
-                    "workflow_yaml": content,
-                    "framework": framework,
-                    "agent_trace": [],
-                })
-            else:
-                result = agent_graph.invoke({
-                    "repo_owner": org_login,
-                    "repo_name": repo_name,
-                    "workflow_file": path,
-                    "workflow_yaml": content,
-                    "governance_document_id": document_id,
-                    "agent_trace": [],
-                })
+                    "document_id": document_id if mode == "document" else None,
+                },
+            )
 
             for finding in result.get("findings", []):
                 session.execute(
@@ -158,7 +195,8 @@ def run_governance_analysis_task(self, message: dict) -> dict:
                 )
                 finding_count += 1
 
-        session.commit()
+            session.commit()
+
         return {"status": "completed", "org_login": org_login, "repo_name": repo_name, "findings": finding_count}
 
     except Exception as exc:
