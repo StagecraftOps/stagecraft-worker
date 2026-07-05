@@ -112,8 +112,9 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
         {"org": org_login},
     ).fetchall()
     for remediation_id, repo_name, workflow_file, failure_category, root_cause in remediations:
+        display_name = failure_category or (root_cause[:60] if root_cause else "Unclassified failure")
         failure_node = _upsert_node(
-            session, graph_id, "failure", f"failure::{remediation_id}", failure_category or "UNKNOWN"
+            session, graph_id, "failure", f"failure::{remediation_id}", display_name
         )
         node_count += 1
         workflow_node = _find_dependency_workflow_node(session, org_login, repo_name, workflow_file)
