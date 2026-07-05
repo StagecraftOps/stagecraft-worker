@@ -60,7 +60,7 @@ def _upsert_knowledge_node_and_edge_tx(
         MATCH (w:GraphNode:Workflow {{org_login: $org, repo_name: $repo, workflow_file: $wf}})
         MERGE (n)-[e:{rel}]->(w)
         ON CREATE SET e.id = randomUUID(), e.created_at = datetime()
-        SET e.confidence = 'certain', e.updated_at = datetime()
+        SET e.confidence = 'certain', e.updated_at = datetime(), e.org_login = $org
         """,
         identity=identity, org=org_login, node_type=node_type, ekey=external_key,
         dname=display_name, repo=repo_name, wf=workflow_file,
