@@ -26,7 +26,7 @@ jobs:
     assert needs_edges[0]["target_key"] == "job::.github/workflows/ci.yml::test"
 
 
-def test_reusable_workflow_call_and_matrix_fanout():
+def test_local_reusable_workflow_call_bridges_to_workflow_node():
     content = """
 name: Domain CI
 on:
@@ -43,12 +43,33 @@ jobs:
       domain: backend
 """
     nodes, edges = parse_workflow(".github/workflows/domain-ci.yml", content)
-    reusable = [n for n in nodes if n["node_type"] == "reusable_workflow"]
-    assert reusable[0]["display_name"] == "./.github/workflows/service-ci.yml"
+    bridged = [n for n in nodes if n["external_key"] == "workflow::.github/workflows/service-ci.yml"]
+    assert len(bridged) == 1
+    assert bridged[0]["node_type"] == "workflow"
+    assert bridged[0]["display_name"] == "./.github/workflows/service-ci.yml"
+    assert bridged[0]["workflow_file"] == ".github/workflows/service-ci.yml"
+    assert bridged[0]["metadata"] == {"placeholder_reusable_ref": True}
 
     fanout_edges = [e for e in edges if e["edge_type"] == "matrix_fanout"]
     assert len(fanout_edges) == 1
+    assert fanout_edges[0]["target_key"] == "workflow::.github/workflows/service-ci.yml"
     assert fanout_edges[0]["metadata"]["matrix"] == {"service": ["a", "b"]}
+
+
+def test_external_reusable_workflow_ref_keeps_placeholder_type():
+    content = """
+name: Notify
+on: workflow_call
+jobs:
+  notify:
+    uses: some-org/shared-workflows/.github/workflows/notify.yml@v2
+"""
+    nodes, edges = parse_workflow(".github/workflows/notify.yml", content)
+    ext = [n for n in nodes if n["node_type"] == "reusable_workflow"]
+    assert len(ext) == 1
+    assert ext[0]["external_key"] == "reusable_workflow::some-org/shared-workflows/.github/workflows/notify.yml@v2"
+    assert ext[0]["workflow_file"] is None
+    assert ext[0]["metadata"] is None
 
 
 def test_composite_action_local_uses_edge():

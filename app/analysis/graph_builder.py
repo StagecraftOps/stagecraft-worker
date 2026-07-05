@@ -184,11 +184,28 @@ def build_graph_data(
             edge["confidence"] = confidence
             edge["metadata"] = {**(edge.get("metadata") or {}), "resolved_runtime": runtime}
 
-    # Dedupe nodes by external_key (a job/reusable-workflow/composite-action can
-    # be referenced from multiple edges).
+    # Dedupe nodes by external_key. A local `uses:` reusable-workflow
+    # reference (_resolve_reusable_workflow_ref) is given the SAME
+    # external_key as the real `workflow` node for that file, so the thin
+    # call-site placeholder and the authoritative node collide here on
+    # purpose — whichever one is NOT flagged placeholder_reusable_ref wins,
+    # regardless of which one this loop reaches first (file processing
+    # order is filesystem/tree order, not call-graph order, so first-wins
+    # alone would be nondeterministic).
     deduped: dict[str, dict] = {}
     for node in all_nodes:
-        deduped.setdefault(node["external_key"], node)
+        key = node["external_key"]
+        existing = deduped.get(key)
+        if existing is None:
+            deduped[key] = node
+            continue
+        existing_is_placeholder = bool((existing.get("metadata") or {}).get("placeholder_reusable_ref"))
+        node_is_placeholder = bool((node.get("metadata") or {}).get("placeholder_reusable_ref"))
+        if existing_is_placeholder and not node_is_placeholder:
+            deduped[key] = node
+        # else keep existing — already authoritative, or both are
+        # placeholders (referenced file wasn't itself scanned, e.g. a
+        # typo'd path); first-wins is an acceptable fallback there.
 
     return list(deduped.values()), all_edges
 

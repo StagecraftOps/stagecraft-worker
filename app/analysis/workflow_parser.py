@@ -37,6 +37,27 @@ def _find_needs_output_refs(value) -> set[str]:
     return refs
 
 
+def _resolve_reusable_workflow_ref(uses: str) -> tuple[str, str, str | None]:
+    """Map a job's `uses:` reusable-workflow reference to a node identity.
+
+    A local reference (`./path/to/workflow.yml` — always repo-root-relative
+    per GHA semantics, never relative to the calling file's directory)
+    resolves to the SAME external_key a `workflow` node for that physical
+    file gets when it is itself parsed as a workflow file — so a caller's
+    edge and the callee's own job graph become one bridgeable node instead
+    of two disconnected nodes (today `workflow::<path>` and
+    `reusable_workflow::./<path>` are unrelated nodes).
+
+    An external/marketplace reference (`owner/repo/.github/workflows/x.yml@ref`)
+    has no local file in this repo to bridge to, so it keeps its own
+    `reusable_workflow` placeholder identity, unchanged from today.
+    """
+    if uses.startswith("./"):
+        resolved_path = uses[2:]
+        return "workflow", f"workflow::{resolved_path}", resolved_path
+    return "reusable_workflow", f"reusable_workflow::{uses}", None
+
+
 def parse_workflow(path: str, content: str) -> tuple[list[dict], list[dict]]:
     """Return (nodes, edges) for one workflow file. Returns ([], []) if unparsable."""
     try:
@@ -109,14 +130,19 @@ def parse_workflow(path: str, content: str) -> tuple[list[dict], list[dict]]:
         # a matrix-wrapped call fans out to one runtime invocation per matrix entry.
         uses = job_def.get("uses")
         if isinstance(uses, str):
-            reusable_key = f"reusable_workflow::{uses}"
+            ref_node_type, reusable_key, ref_workflow_file = _resolve_reusable_workflow_ref(uses)
             nodes.append({
-                "node_type": "reusable_workflow",
+                "node_type": ref_node_type,
                 "external_key": reusable_key,
                 "display_name": uses,
-                "workflow_file": None,
+                "workflow_file": ref_workflow_file,
                 "job_id": None,
-                "metadata": None,
+                # Marks this as a synthesized stand-in for a local workflow
+                # file. build_graph_data's dedupe prefers the authoritative
+                # `workflow` node (parsed when that file gets its own turn
+                # in the repo's workflow_files loop) over this placeholder
+                # when both share the same external_key.
+                "metadata": {"placeholder_reusable_ref": True} if ref_node_type == "workflow" else None,
             })
             edges.append({
                 "source_key": job_key,
