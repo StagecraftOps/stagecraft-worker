@@ -42,9 +42,14 @@ task_acks_late = True
 task_reject_on_worker_lost = True
 worker_prefetch_multiplier = 1
 
-# Redis's default visibility_timeout is 3600s — a task whose worker is killed
-# (e.g. a rolling deploy) would sit un-redelivered for up to an hour even
-# with acks_late. 10 minutes is generous for every task in this app.
-broker_transport_options = {"visibility_timeout": 600}
+# Must stay comfortably above the slowest task's real running time, or Redis
+# redelivers a task that's still legitimately in progress to a second worker,
+# causing concurrent duplicate execution (observed live: 600s was shorter
+# than run_governance_analysis_task's ~20-35min real duration for a
+# 100+-workflow repo, so it got redelivered mid-run every time). Per-file
+# checkpointing (see governance.py) means a genuinely killed worker only
+# loses its current in-flight file, not the whole run, so biasing this
+# value upward costs little.
+broker_transport_options = {"visibility_timeout": 5400}
 
 result_expires = 86400
