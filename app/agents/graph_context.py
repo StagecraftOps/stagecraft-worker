@@ -18,8 +18,12 @@ from app.services.neo4j_client import get_driver
 def retrieve_graph_context(state: dict) -> dict:
     trace = state.get("agent_trace", [])
 
-    if settings.GRAPH_BACKEND != "neo4j":
-        trace.append("retrieve_graph_context: skipped (GRAPH_BACKEND != neo4j)")
+    # Gated on dual-write, not GRAPH_BACKEND (the dependency_graph.py read-path
+    # cutover flag) -- this only needs Neo4j to have data, which dual-write
+    # alone provides, independent of whether the graph API routes have been
+    # cut over to reading from it yet.
+    if not settings.GRAPH_DUAL_WRITE_NEO4J:
+        trace.append("retrieve_graph_context: skipped (GRAPH_DUAL_WRITE_NEO4J is off)")
         return {**state, "graph_context": {}, "agent_trace": trace}
 
     org = state.get("repo_owner", "")
