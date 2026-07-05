@@ -34,7 +34,7 @@ def build_dependency_graph_task(self, message: dict) -> dict:
 
         logger.info("Building dependency graph for %s/%s@%s", org_login, repo_name, ref)
         nodes, edges = build_graph_data(github, org_login, repo_name, ref)
-        persist_graph(session, graph_id, nodes, edges)
+        persist_graph(session, graph_id, org_login, repo_name, nodes, edges)
 
         logger.info(
             "Dependency graph %s completed: %d nodes, %d edges", graph_id, len(nodes), len(edges)

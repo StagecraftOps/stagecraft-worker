@@ -2,12 +2,69 @@
 findings, remediation failures, and optimization recommendations into
 graph_type='knowledge' rows that reference graph_type='dependency' node ids
 directly — same graph_nodes/graph_edges tables from FR-1, no separate store.
+
+When GRAPH_DUAL_WRITE_NEO4J is set, the same cross-links are additionally
+written to Neo4j as real GovernanceRule/Failure/RuntimeMetric nodes MERGEd
+onto the org's existing Workflow nodes via GOVERNS/CAUSED_BY/MEASURED_BY
+relationships — no graph_id partitioning needed there, since nodes are
+identified by (org_login, node_type, external_key) directly.
 """
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.services.neo4j_client import get_driver
+
+_KNOWLEDGE_LABELS = {
+    "governance_rule": "GovernanceRule",
+    "failure": "Failure",
+    "runtime_metric": "RuntimeMetric",
+}
+_KNOWLEDGE_RELS = {
+    "governs": "GOVERNS",
+    "caused_by": "CAUSED_BY",
+    "measured_by": "MEASURED_BY",
+}
+
+
+def _clear_knowledge_nodes_tx(tx, org_login: str) -> None:
+    """Scoped to exactly the 3 knowledge-graph label types for this org —
+    never touches Workflow/Job/etc. (owned by dependency-graph rebuilds)."""
+    tx.run(
+        """
+        MATCH (n:GraphNode {org_login: $org})
+        WHERE n.node_type IN ['governance_rule', 'failure', 'runtime_metric']
+        DETACH DELETE n
+        """,
+        org=org_login,
+    )
+
+
+def _upsert_knowledge_node_and_edge_tx(
+    tx, org_login: str, node_type: str, external_key: str, display_name: str,
+    repo_name: str, workflow_file: str, rel_type: str,
+) -> None:
+    label = _KNOWLEDGE_LABELS[node_type]
+    rel = _KNOWLEDGE_RELS[rel_type]
+    identity = f"{org_login}::::{external_key}"  # org-wide identity — see graph_builder._identity_key
+    tx.run(
+        f"""
+        MERGE (n:GraphNode:{label} {{identity_key: $identity}})
+        ON CREATE SET n.id = randomUUID(), n.created_at = datetime()
+        SET n.org_login = $org, n.node_type = $node_type, n.external_key = $ekey,
+            n.display_name = $dname, n.updated_at = datetime()
+        WITH n
+        MATCH (w:GraphNode:Workflow {{org_login: $org, repo_name: $repo, workflow_file: $wf}})
+        MERGE (n)-[e:{rel}]->(w)
+        ON CREATE SET e.id = randomUUID(), e.created_at = datetime()
+        SET e.confidence = 'certain', e.updated_at = datetime()
+        """,
+        identity=identity, org=org_login, node_type=node_type, ekey=external_key,
+        dname=display_name, repo=repo_name, wf=workflow_file,
+    )
 
 
 def _find_dependency_workflow_node(session: Session, org_login: str, repo_name: str, workflow_file: str) -> uuid.UUID | None:
@@ -83,6 +140,11 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
     node_count = 0
     edge_count = 0
 
+    neo_session = None
+    if settings.GRAPH_DUAL_WRITE_NEO4J:
+        neo_session = get_driver().session()
+        neo_session.execute_write(_clear_knowledge_nodes_tx, org_login)
+
     # governance_rule nodes <-governs- compliance findings, linked to the dependency graph's workflow node
     findings = session.execute(
         text(
@@ -100,6 +162,11 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
         if workflow_node:
             _add_edge(session, graph_id, rule_node, workflow_node, "governs")
             edge_count += 1
+        if neo_session:
+            neo_session.execute_write(
+                _upsert_knowledge_node_and_edge_tx, org_login, "governance_rule",
+                f"governance_rule::{requirement_id}", requirement_id, repo_name, workflow_file, "governs",
+            )
 
     # failure nodes <-caused_by- remediations, linked to the dependency graph's workflow node
     remediations = session.execute(
@@ -121,6 +188,11 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
         if workflow_node:
             _add_edge(session, graph_id, failure_node, workflow_node, "caused_by")
             edge_count += 1
+        if neo_session:
+            neo_session.execute_write(
+                _upsert_knowledge_node_and_edge_tx, org_login, "failure",
+                f"failure::{remediation_id}", display_name, repo_name, workflow_file, "caused_by",
+            )
 
     # runtime_metric nodes <-measured_by- optimization recommendations, linked to the workflow node
     recommendations = session.execute(
@@ -133,14 +205,23 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
         {"org": org_login},
     ).fetchall()
     for rec_id, repo_name, workflow_file, rec_type, savings in recommendations:
+        metric_display_name = f"{rec_type} ({savings}s savings)"
         metric_node = _upsert_node(
-            session, graph_id, "runtime_metric", f"runtime_metric::{rec_id}", f"{rec_type} ({savings}s savings)"
+            session, graph_id, "runtime_metric", f"runtime_metric::{rec_id}", metric_display_name
         )
         node_count += 1
         workflow_node = _find_dependency_workflow_node(session, org_login, repo_name, workflow_file)
         if workflow_node:
             _add_edge(session, graph_id, metric_node, workflow_node, "measured_by")
             edge_count += 1
+        if neo_session:
+            neo_session.execute_write(
+                _upsert_knowledge_node_and_edge_tx, org_login, "runtime_metric",
+                f"runtime_metric::{rec_id}", metric_display_name, repo_name, workflow_file, "measured_by",
+            )
+
+    if neo_session:
+        neo_session.close()
 
     session.execute(
         text(
