@@ -198,6 +198,15 @@ def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: lis
     repo's dependency-graph nodes only (workflow/job/reusable_workflow/
     composite_action) — never touches Service/ExternalRepo (org-wide,
     shared with the knowledge graph) or GovernanceRule/Failure/RuntimeMetric.
+
+    Every edge is tagged with org_login/repo_name so the read path can filter
+    "this repo's dependency-graph edges" directly by property, rather than by
+    which nodes an edge touches — an orchestrator.yaml-derived edge connects
+    two org-wide Service nodes, neither of which is in the repo-scoped node
+    set, so node-touching alone can't recover which repo's build produced it.
+    Known limitation: if two repos' orchestrator.yaml files both describe a
+    dependency between the same two service names, MERGE reuses one
+    relationship and the tag reflects whichever repo wrote it last.
     """
     tx.run(
         """
@@ -250,9 +259,10 @@ def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: lis
             MATCH (s:GraphNode {{identity_key: $src}}), (t:GraphNode {{identity_key: $tgt}})
             MERGE (s)-[e:{rel}]->(t)
             ON CREATE SET e.id = randomUUID(), e.created_at = datetime()
-            SET e.confidence = $conf, e.metadata_json = $meta, e.updated_at = datetime()
+            SET e.confidence = $conf, e.metadata_json = $meta, e.updated_at = datetime(),
+                e.org_login = $org, e.repo_name = $repo
             """,
-            src=source_identity, tgt=target_identity,
+            src=source_identity, tgt=target_identity, org=org_login, repo=repo_name,
             conf=edge.get("confidence", "certain"),
             meta=json.dumps(edge["metadata"]) if edge.get("metadata") is not None else None,
         )
