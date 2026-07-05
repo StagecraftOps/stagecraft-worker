@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from app.agents.compliance_nodes import _parse_json_list
 from app.agents.governance_state import GovernanceState
+from app.agents.graph_context import format_graph_context_block
 from app.agents.nodes import _converse
 from app.services.embeddings import embed_text, to_pgvector
 
@@ -58,9 +59,13 @@ def compare_controls(state: GovernanceState) -> GovernanceState:
         f"You are auditing a GitHub Actions workflow ({state.get('workflow_file')}) against an "
         f"organization's governance policy document.\n\n"
         f"Relevant policy excerpts:\n{requirements_block}\n\n"
+        f"Structural graph context (existing audit/dependency state for this workflow):\n"
+        f"{format_graph_context_block(state)}\n\n"
         f"Workflow YAML:\n{state.get('workflow_yaml', '')[:8000]}\n\n"
         "For each distinct requirement implied by the policy excerpts, determine whether the "
-        "workflow satisfies it. If no policy excerpts are relevant, return an empty list. Respond "
+        "workflow satisfies it. Use the structural graph context to note continuity (e.g. a "
+        "requirement already governing this workflow, or a known failure history) where relevant "
+        "to your detail. If no policy excerpts are relevant, return an empty list. Respond "
         "with ONLY valid JSON: a list of objects in this exact format:\n"
         '[{"requirement_id": "<short id>", "status": "compliant"|"gap"|"not_applicable", '
         '"detail": "<one sentence>", "severity": "low"|"medium"|"high", '

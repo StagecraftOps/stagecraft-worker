@@ -6,6 +6,7 @@ it from the Governance Agent's document-based findings.
 import json
 
 from app.agents.compliance_state import ComplianceState
+from app.agents.graph_context import format_graph_context_block
 from app.agents.nodes import _converse
 
 _FRAMEWORK_CONTROLS = {
@@ -39,8 +40,12 @@ def check_framework_controls(state: ComplianceState) -> ComplianceState:
         f"You are auditing a GitHub Actions workflow ({state.get('workflow_file')}) for "
         f"{framework} compliance.\n\n"
         f"Expected controls for {framework}:\n{control_list}\n\n"
+        f"Structural graph context (existing audit/dependency state for this workflow):\n"
+        f"{format_graph_context_block(state)}\n\n"
         f"Workflow YAML:\n{state.get('workflow_yaml', '')[:8000]}\n\n"
-        "For each expected control, determine whether the workflow satisfies it. Respond with "
+        "For each expected control, determine whether the workflow satisfies it. Use the "
+        "structural graph context to note continuity (e.g. a control already governing this "
+        "workflow, or a known failure history) where relevant to your detail. Respond with "
         "ONLY valid JSON: a list of objects, one per control, in this exact format:\n"
         '[{"requirement_id": "<short id>", "status": "compliant"|"gap"|"not_applicable", '
         '"detail": "<one sentence>", "severity": "low"|"medium"|"high", '

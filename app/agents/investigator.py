@@ -97,6 +97,33 @@ _TOOL_CONFIG = {
                 },
             }
         },
+        {
+            "toolSpec": {
+                "name": "query_graph",
+                "description": (
+                    "Query the CI/CD dependency/knowledge graph for structural facts about one "
+                    "workflow — a graph traversal, not text search. Use this when the question is "
+                    "about what's structurally connected to a workflow (what it depends on, what "
+                    "depends on it, what governance rules or failure history are already linked "
+                    "to it), rather than semantic search over remediation text."
+                ),
+                "inputSchema": {
+                    "json": {
+                        "type": "object",
+                        "properties": {
+                            "repo_name": {"type": "string"},
+                            "workflow_file": {"type": "string"},
+                            "relationship": {
+                                "type": "string",
+                                "enum": ["depends_on", "depended_on_by", "governance", "failures"],
+                                "description": "Which structural relationship to look up, default depends_on",
+                            },
+                        },
+                        "required": ["repo_name", "workflow_file"],
+                    }
+                },
+            }
+        },
     ]
 }
 
@@ -105,6 +132,10 @@ search_remediations (and, only if needed, get_run_logs / get_workflow_yaml) to g
 from past pipeline failures, then reason across what you find — spot patterns, compare repos, \
 explain trends. If the evidence doesn't support a confident answer, say so plainly instead of \
 guessing. You have at most {max_rounds} tool calls — use them deliberately.
+
+Call query_graph instead when the question is about structural dependencies or what's connected \
+to a workflow (what it calls, what calls it, what governance rules or failures are already linked \
+to it) — that's a graph traversal, not something semantic search over remediation text will answer well.
 
 When citing evidence, refer to it the way a person would talk about it — "stagecraft-api's CI build \
 step (analyzed 2026-06-20)" — never a bare remediation_id or UUID. If failure_category comes back \
