@@ -342,6 +342,28 @@ In 2-3 sentences, explain in plain English what this gap likely means in practic
         result = self._invoke_json(prompt, required_keys={"narrative"}, max_tokens=512)
         return result["narrative"]
 
+    def narrate_vulnerability_rca(self, finding: dict, app_context: dict | None, blast_radius: dict) -> str:
+        context_lines = "none on file"
+        if app_context:
+            context_lines = (
+                f"risk tier: {app_context.get('risk_tier') or 'unset'}, "
+                f"regulatory scope: {app_context.get('regulatory_scope') or []}"
+            )
+        prompt = f"""You are summarizing a security finding for an engineer, based on structured evidence already gathered by deterministic tools -- do not invent or re-diagnose the vulnerability yourself, only explain it.
+
+Source: {finding.get('alert_source')}
+Identifier: {finding.get('identifier') or 'n/a'}
+Package: {finding.get('package_name') or 'n/a'}
+Severity (raw): {finding.get('severity') or 'unknown'}
+Severity (in application context): {finding.get('severity_in_context') or 'unknown'}
+Description: {finding.get('description') or 'n/a'}
+Application context: {context_lines}
+Blast radius: {blast_radius.get('affected_repos', [])} repos, {blast_radius.get('affected_files', [])} files reference this package
+
+In 3-4 sentences, explain what this finding means in practice for this application, why the severity is what it is given the context above, and what's at stake if left unaddressed. Respond with ONLY valid JSON in this exact format: {{"summary": "..."}}"""
+        result = self._invoke_json(prompt, required_keys={"summary"}, max_tokens=512)
+        return result["summary"]
+
     def judge_pattern_cluster(self, candidate_jobs: list[dict], min_occurrences: int) -> dict | None:
         jobs_desc = "\n".join(
             f"- {j['job_key']}: uses {', '.join(j['components'])}" for j in candidate_jobs

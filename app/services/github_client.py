@@ -209,5 +209,42 @@ class GitHubRemediationClient:
             },
         )
 
+    def get_branch_sha(self, owner: str, repo: str, branch: str) -> str | None:
+        try:
+            data = self._get(f"/repos/{owner}/{repo}/git/ref/heads/{branch}")
+            if isinstance(data, dict):
+                return data.get("object", {}).get("sha")
+            return None
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None
+            raise
+
+    def search_code(self, query: str) -> list[dict]:
+        results = self._get("/search/code", params={"q": query})
+        return results.get("items", []) if isinstance(results, dict) else []
+
+    def find_issue_by_marker(self, owner: str, repo: str, marker: str) -> dict | None:
+        results = self._get(
+            "/search/issues",
+            params={"q": f'repo:{owner}/{repo} type:issue in:body "{marker}"'},
+        )
+        items = results.get("items", []) if isinstance(results, dict) else []
+        return items[0] if items else None
+
+    def create_issue(
+        self, owner: str, repo: str, title: str, body: str, labels: list[str] | None = None
+    ) -> dict:
+        payload: dict = {"title": title, "body": body}
+        if labels:
+            payload["labels"] = labels
+        return self._post(f"/repos/{owner}/{repo}/issues", json=payload)
+
+    def add_issue_comment(self, owner: str, repo: str, issue_number: int, body: str) -> dict:
+        return self._post(f"/repos/{owner}/{repo}/issues/{issue_number}/comments", json={"body": body})
+
+    def add_pr_labels(self, owner: str, repo: str, pr_number: int, labels: list[str]) -> None:
+        self._post(f"/repos/{owner}/{repo}/issues/{pr_number}/labels", json={"labels": labels})
+
     def close(self) -> None:
         self._client.close()

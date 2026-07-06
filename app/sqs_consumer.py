@@ -19,6 +19,7 @@ from app.tasks.optimization import run_optimization_analysis_task
 from app.tasks.pr_review import process_pull_request
 from app.tasks.standardization import run_pattern_frequency_task, run_template_diff_task
 from app.tasks.drift_detection import run_drift_detection_task
+from app.tasks.vulnerability import run_vulnerability_remediation_task
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,6 +59,10 @@ def _dispatch(message: dict) -> None:
 
     if event_type == "run_drift_detection":
         run_drift_detection_task.delay(message)
+        return
+
+    if event_type == "security_alert":
+        run_vulnerability_remediation_task.delay(message)
         return
 
     if event_type == "pull_request":
