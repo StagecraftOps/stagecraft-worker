@@ -7,6 +7,7 @@ app = Celery(
         "app.tasks.dependency_graph",
         "app.tasks.job_timing",
         "app.tasks.standardization",
+        "app.tasks.drift_detection",
         "app.tasks.pr_review",
         "app.tasks.governance",
         "app.tasks.optimization",
