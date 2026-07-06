@@ -3,7 +3,7 @@
 for that file regardless of which file is scanned first (see
 workflow_parser._resolve_reusable_workflow_ref and the dedupe fix in
 build_graph_data)."""
-from app.analysis.graph_builder import build_graph_data
+from app.analysis.graph_builder import _identity_key, build_graph_data
 
 _CALLER = """
 name: Caller CI
@@ -62,3 +62,25 @@ def test_dedupe_when_callee_scanned_before_caller():
         (".github/workflows/_template-notify-slack.yml", _CALLEE),
         (".github/workflows/caller.yml", _CALLER),
     ])
+
+
+def test_external_reusable_workflow_identity_is_shared_across_repos():
+    """Two repos in the same org calling the identical external/marketplace
+    reusable workflow must resolve to the SAME Neo4j identity_key, so they
+    share one node instead of each getting their own -- reusable_workflow is
+    intentionally excluded from _REPO_SCOPED_TYPES for exactly this reason."""
+    external_key = "reusable_workflow::some-org/shared-workflows/.github/workflows/notify.yml@v2"
+    identity_repo_a = _identity_key("acme", "reusable_workflow", external_key, "repo-a")
+    identity_repo_b = _identity_key("acme", "reusable_workflow", external_key, "repo-b")
+    assert identity_repo_a == identity_repo_b
+
+
+def test_workflow_and_job_identity_still_repo_scoped():
+    """workflow/job/composite_action must stay repo-scoped -- two repos each
+    with their own workflow file named the same path are different nodes,
+    unlike the shared-template case above."""
+    for node_type in ("workflow", "job", "composite_action"):
+        key = f"{node_type}::.github/workflows/ci.yml"
+        identity_repo_a = _identity_key("acme", node_type, key, "repo-a")
+        identity_repo_b = _identity_key("acme", node_type, key, "repo-b")
+        assert identity_repo_a != identity_repo_b

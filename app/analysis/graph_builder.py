@@ -29,7 +29,22 @@ logger = logging.getLogger(__name__)
 # node_type values repo-scoped identity (two repos in the same org can
 # collide on the same external_key); everything else here is org-wide —
 # see the module docstring on _write_dependency_subgraph below.
-_REPO_SCOPED_TYPES = {"workflow", "job", "reusable_workflow", "composite_action"}
+#
+# reusable_workflow is org-wide, not repo-scoped: after the bridging fix in
+# workflow_parser._resolve_reusable_workflow_ref, this node_type only ever
+# represents an EXTERNAL/marketplace reference (owner/repo/path@ref) — local
+# `./...` refs resolve to the real `workflow` node instead. An external ref
+# names the exact same remote file+ref no matter which repo in the org calls
+# it, so repo-scoping it would give two repos calling the same shared
+# template two disconnected nodes instead of one shared one.
+_REPO_SCOPED_TYPES = {"workflow", "job", "composite_action"}
+
+# Org-wide node types with no repo_name of their own (service/external_repo)
+# still need to be resolvable from "this repo's dependency graph" even when
+# they have zero edges (see declared_by_repos handling in
+# _write_dependency_subgraph_tx and the read-path query in stagecraft-api's
+# dependency_graph.py).
+_ORG_WIDE_DECLARABLE_TYPES = {"service", "external_repo"}
 
 _NODE_LABELS = {
     "workflow": "Workflow",
@@ -212,9 +227,9 @@ def build_graph_data(
 
 def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: list[dict], edges: list[dict]) -> None:
     """Cypher MERGE equivalent of the Postgres INSERTs below, scoped to this
-    repo's dependency-graph nodes only (workflow/job/reusable_workflow/
-    composite_action) — never touches Service/ExternalRepo (org-wide,
-    shared with the knowledge graph) or GovernanceRule/Failure/RuntimeMetric.
+    repo's own dependency-graph nodes (workflow/job/composite_action) —
+    never touches Service/ExternalRepo/ReusableWorkflow (org-wide, shared
+    across repos) or GovernanceRule/Failure/RuntimeMetric.
 
     Every edge is tagged with org_login/repo_name so the read path can filter
     "this repo's dependency-graph edges" directly by property, rather than by
@@ -224,6 +239,15 @@ def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: lis
     Known limitation: if two repos' orchestrator.yaml files both describe a
     dependency between the same two service names, MERGE reuses one
     relationship and the tag reflects whichever repo wrote it last.
+
+    'reusable_workflow' stays in the DETACH DELETE list below even though it
+    is no longer repo-scoped (see _REPO_SCOPED_TYPES) purely to migrate
+    nodes written under the old per-repo-scoped identity scheme: the first
+    rebuild of a given repo after this change still matches and clears its
+    old repo_name-tagged ReusableWorkflow nodes, after which the MERGE below
+    recreates them under the new org-wide identity_key. Once migrated, this
+    clause is a permanent no-op for that node type (new nodes carry
+    repo_name = None, which never equals $repo) — harmless to leave in.
     """
     tx.run(
         """
@@ -247,20 +271,48 @@ def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: lis
         # no meaningful repo_name — store None so read-path queries scoped to
         # a specific repo don't accidentally match them.
         node_repo_name = repo_name if node_type in _REPO_SCOPED_TYPES else None
-        tx.run(
-            f"""
-            MERGE (n:GraphNode:{label} {{identity_key: $identity}})
-            ON CREATE SET n.id = randomUUID(), n.created_at = datetime()
-            SET n.org_login = $org, n.repo_name = $repo, n.node_type = $node_type,
-                n.external_key = $ekey, n.display_name = $dname,
-                n.workflow_file = $wf, n.job_id = $jid, n.metadata_json = $meta,
-                n.updated_at = datetime()
-            """,
-            identity=identity, org=org_login, repo=node_repo_name, node_type=node_type,
-            ekey=node["external_key"], dname=node["display_name"],
-            wf=node.get("workflow_file"), jid=node.get("job_id"),
-            meta=json.dumps(node["metadata"]) if node.get("metadata") is not None else None,
-        )
+        if node_type in _ORG_WIDE_DECLARABLE_TYPES:
+            # Zero-edge org-wide nodes (e.g. a standalone orchestrator.yaml
+            # entry nothing depends on) have no edge for the read path to
+            # traverse into from this repo's dependency-graph query, so
+            # track "which repos declared this node" directly as a list
+            # property instead — accumulated across builds since these
+            # nodes are never DETACH DELETEd (see the DETACH DELETE above,
+            # scoped to repo-owned types only).
+            tx.run(
+                f"""
+                MERGE (n:GraphNode:{label} {{identity_key: $identity}})
+                ON CREATE SET n.id = randomUUID(), n.created_at = datetime(), n.declared_by_repos = []
+                SET n.org_login = $org, n.repo_name = $repo, n.node_type = $node_type,
+                    n.external_key = $ekey, n.display_name = $dname,
+                    n.workflow_file = $wf, n.job_id = $jid, n.metadata_json = $meta,
+                    n.updated_at = datetime(),
+                    n.declared_by_repos = CASE
+                        WHEN $repo_name IN coalesce(n.declared_by_repos, []) THEN coalesce(n.declared_by_repos, [])
+                        ELSE coalesce(n.declared_by_repos, []) + $repo_name
+                    END
+                """,
+                identity=identity, org=org_login, repo=node_repo_name, node_type=node_type,
+                ekey=node["external_key"], dname=node["display_name"],
+                wf=node.get("workflow_file"), jid=node.get("job_id"),
+                meta=json.dumps(node["metadata"]) if node.get("metadata") is not None else None,
+                repo_name=repo_name,
+            )
+        else:
+            tx.run(
+                f"""
+                MERGE (n:GraphNode:{label} {{identity_key: $identity}})
+                ON CREATE SET n.id = randomUUID(), n.created_at = datetime()
+                SET n.org_login = $org, n.repo_name = $repo, n.node_type = $node_type,
+                    n.external_key = $ekey, n.display_name = $dname,
+                    n.workflow_file = $wf, n.job_id = $jid, n.metadata_json = $meta,
+                    n.updated_at = datetime()
+                """,
+                identity=identity, org=org_login, repo=node_repo_name, node_type=node_type,
+                ekey=node["external_key"], dname=node["display_name"],
+                wf=node.get("workflow_file"), jid=node.get("job_id"),
+                meta=json.dumps(node["metadata"]) if node.get("metadata") is not None else None,
+            )
 
     for edge in edges:
         source_identity = key_to_identity.get(edge["source_key"])
