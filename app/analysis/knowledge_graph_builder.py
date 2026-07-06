@@ -30,6 +30,20 @@ _KNOWLEDGE_RELS = {
 }
 
 
+def _failure_display_name(failure_category: str | None, root_cause: str | None) -> str:
+    """classify_failure (app/agents/nodes.py) has a fixed enum of specific
+    categories plus a literal "UNKNOWN" catch-all for whatever it couldn't
+    confidently bucket -- a real, valid classification, but useless as a
+    graph node label (tells the viewer nothing). Treat it the same as no
+    category at all and fall back to the actual root cause text."""
+    has_specific_category = bool(failure_category) and failure_category.strip().upper() != "UNKNOWN"
+    if has_specific_category:
+        return failure_category
+    if root_cause:
+        return root_cause[:60]
+    return "Unclassified failure"
+
+
 def _clear_knowledge_nodes_tx(tx, org_login: str) -> None:
     """Scoped to exactly the 3 knowledge-graph label types for this org —
     never touches Workflow/Job/etc. (owned by dependency-graph rebuilds)."""
@@ -179,7 +193,7 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
         {"org": org_login},
     ).fetchall()
     for remediation_id, repo_name, workflow_file, failure_category, root_cause in remediations:
-        display_name = failure_category or (root_cause[:60] if root_cause else "Unclassified failure")
+        display_name = _failure_display_name(failure_category, root_cause)
         failure_node = _upsert_node(
             session, graph_id, "failure", f"failure::{remediation_id}", display_name
         )
