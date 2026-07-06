@@ -20,6 +20,7 @@ from app.services.github_app import (
     get_installation_token,
     github_app_configured,
 )
+from app.tasks.agent_report import record_agent_run
 from app.services.github_client import GitHubRemediationClient
 
 logger = logging.getLogger(__name__)
@@ -748,6 +749,16 @@ def process_failed_workflow(self, message: dict) -> dict:
                 run_id,
                 remediation_id,
             )
+            record_agent_run(
+                session,
+                org_login=repo_owner,
+                repo_name=repo_name,
+                agent_name="failure_rca",
+                outcome="needs_review",
+                summary=f"Root cause found for {workflow_file} in {repo_name}, but no valid YAML fix could be produced.",
+                gaps_found=1,
+            )
+            session.commit()
             if failure_category:
                 enqueue_knowledge_graph_rebuild(repo_owner)
             return {"status": "failed", "remediation_id": str(remediation_id)}
@@ -775,6 +786,18 @@ def process_failed_workflow(self, message: dict) -> dict:
         })
         if failure_category:
             enqueue_knowledge_graph_rebuild(repo_owner)
+
+        record_agent_run(
+            session,
+            org_login=repo_owner,
+            repo_name=repo_name,
+            agent_name="failure_rca",
+            outcome="needs_review",
+            summary=f"Proposed a fix for {workflow_file} in {repo_name}: {root_cause}",
+            gaps_found=1,
+            artifacts=[str(remediation_id)],
+        )
+        session.commit()
 
         try:
             _ingest_embedding(

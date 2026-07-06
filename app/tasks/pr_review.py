@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.agents.registry import get_agent_graph
 from app.core.celery_app import app
 from app.services.github_client import GitHubRemediationClient
+from app.tasks.agent_report import record_agent_run
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, _publish_event
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,21 @@ def process_pull_request(self, message: dict) -> dict:
         )
         session.commit()
         _publish_event("pr_review_updated", {"id": str(review_id), "status": "completed"})
+
+        findings = final_state.get("findings", [])
+        record_agent_run(
+            session,
+            org_login=repo_owner,
+            repo_name=repo_name,
+            agent_name="peer_review",
+            outcome="needs_review" if findings else "success",
+            summary=(
+                f"{len(findings)} finding(s) on PR #{pr_number} in {repo_name} (risk {final_state.get('risk_score', 0)}/10)."
+                if findings else f"No governance findings on PR #{pr_number} in {repo_name}."
+            ),
+            gaps_found=len(findings),
+        )
+        session.commit()
 
         return {"status": "completed", "review_id": str(review_id)}
 

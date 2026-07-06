@@ -9,6 +9,7 @@ from app.agents.registry import get_agent_graph
 from app.core.celery_app import app
 from app.services.embeddings import embed_text, to_pgvector
 from app.services.github_client import GitHubRemediationClient
+from app.tasks.agent_report import record_agent_run
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, enqueue_knowledge_graph_rebuild
 from app.tasks.standardization import _fetch_workflow_contents
 
@@ -95,9 +96,11 @@ def run_governance_analysis_task(self, message: dict) -> dict:
         github = GitHubRemediationClient(github_token)
         workflow_contents = _fetch_workflow_contents(github, org_login, repo_name, ref)
 
-        agent_graph = get_agent_graph("compliance" if mode == "framework" else "governance")
+        agent_name = "compliance" if mode == "framework" else "governance"
+        agent_graph = get_agent_graph(agent_name)
         now = datetime.now(timezone.utc)
         finding_count = 0
+        gap_count = 0
 
         for path, content in workflow_contents.items():
             try:
@@ -170,11 +173,27 @@ def run_governance_analysis_task(self, message: dict) -> dict:
                     },
                 )
                 finding_count += 1
+                if finding.get("status") not in ("compliant", "not_applicable"):
+                    gap_count += 1
 
             session.commit()
 
         if finding_count > 0:
             enqueue_knowledge_graph_rebuild(org_login)
+
+        record_agent_run(
+            session,
+            org_login=org_login,
+            repo_name=repo_name,
+            agent_name=agent_name,
+            outcome="needs_review" if gap_count else "success",
+            summary=(
+                f"{gap_count} compliance gap(s) found across {len(workflow_contents)} workflow(s) in {repo_name}."
+                if gap_count else f"No compliance gaps found across {len(workflow_contents)} workflow(s) in {repo_name}."
+            ),
+            gaps_found=gap_count,
+        )
+        session.commit()
 
         return {"status": "completed", "org_login": org_login, "repo_name": repo_name, "findings": finding_count}
 

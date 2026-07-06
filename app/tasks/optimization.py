@@ -11,6 +11,7 @@ from app.core.celery_app import app
 from app.core.config import settings
 from app.services.github_client import GitHubRemediationClient
 from app.services.neo4j_client import get_driver
+from app.tasks.agent_report import record_agent_run
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, enqueue_knowledge_graph_rebuild
 
 logger = logging.getLogger(__name__)
@@ -235,6 +236,18 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
                 },
             )
 
+        record_agent_run(
+            session,
+            org_login=org_login,
+            repo_name=repo_name,
+            agent_name="performance_optimization",
+            outcome="needs_review" if recommendation_ids else "success",
+            summary=(
+                f"{len(recommendation_ids)} optimization recommendation(s) for {workflow_file} in {repo_name}."
+                if recommendation_ids else f"No optimization opportunities found for {workflow_file} in {repo_name}."
+            ),
+            gaps_found=len(recommendation_ids),
+        )
         session.commit()
 
         if recommendation_ids:
