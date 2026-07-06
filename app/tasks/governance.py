@@ -12,7 +12,7 @@ from app.agents.registry import get_agent_graph
 from app.core.celery_app import app
 from app.services.embeddings import embed_text, to_pgvector
 from app.services.github_client import GitHubRemediationClient
-from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
+from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, enqueue_knowledge_graph_rebuild
 from app.tasks.standardization import _fetch_workflow_contents
 
 logger = logging.getLogger(__name__)
@@ -196,6 +196,9 @@ def run_governance_analysis_task(self, message: dict) -> dict:
                 finding_count += 1
 
             session.commit()
+
+        if finding_count > 0:
+            enqueue_knowledge_graph_rebuild(org_login)
 
         return {"status": "completed", "org_login": org_login, "repo_name": repo_name, "findings": finding_count}
 

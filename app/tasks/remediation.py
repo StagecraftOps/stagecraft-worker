@@ -213,6 +213,25 @@ def _publish_event(event_type: str, data: dict) -> None:
     except Exception as exc:
         logger.warning("Failed to publish %s event to Redis: %s", event_type, exc)
 
+
+def enqueue_knowledge_graph_rebuild(org_login: str) -> None:
+    """Keep the knowledge graph's Failure/GovernanceRule/RuntimeMetric nodes
+    from going stale between manual Rebuilds. Called from remediation.py,
+    governance.py, and optimization.py whenever they write a row the
+    knowledge graph would care about (a classified failure, a new finding, a
+    new recommendation) -- each caller gates on its own "did this actually
+    add anything new" condition before calling, since build_knowledge_graph
+    re-scans the whole org unconditionally and a call with nothing new to
+    find is a wasted rebuild. Best-effort: never fail the caller's task over
+    this -- a queueing hiccup here just means the graph is stale until the
+    next natural rebuild (e.g. the next dependency-graph build's auto-chain).
+    """
+    try:
+        from app.tasks.knowledge_graph import build_knowledge_graph_task
+        build_knowledge_graph_task.delay({"org_login": org_login})
+    except Exception as exc:
+        logger.warning("Failed to enqueue knowledge-graph rebuild for %s: %s", org_login, exc)
+
 def _get_github_token_for_org(session: Session, org_login: str) -> str:
     # Prefer GitHub App installation token — scoped to the org, no user token needed.
     if github_app_configured():
@@ -778,6 +797,8 @@ def process_failed_workflow(self, message: dict) -> dict:
                 run_id,
                 remediation_id,
             )
+            if failure_category:
+                enqueue_knowledge_graph_rebuild(repo_owner)
             return {"status": "failed", "remediation_id": str(remediation_id)}
 
         _update_remediation(
@@ -800,6 +821,8 @@ def process_failed_workflow(self, message: dict) -> dict:
             "status": "analyzed",
             "root_cause": root_cause,
         })
+        if failure_category:
+            enqueue_knowledge_graph_rebuild(repo_owner)
 
         # Index this remediation for semantic (RAG) search in Pipeline Chat.
         # Best-effort — never fail the analysis if embedding/Bedrock hiccups.

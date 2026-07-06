@@ -19,7 +19,7 @@ from app.core.celery_app import app
 from app.core.config import settings
 from app.services.github_client import GitHubRemediationClient
 from app.services.neo4j_client import get_driver
-from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
+from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, enqueue_knowledge_graph_rebuild
 
 logger = logging.getLogger(__name__)
 
@@ -257,6 +257,10 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
             )
 
         session.commit()
+
+        if recommendation_ids:
+            enqueue_knowledge_graph_rebuild(org_login)
+
         return {
             "status": "completed",
             "org_login": org_login,
