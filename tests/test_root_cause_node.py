@@ -83,6 +83,26 @@ def test_app_context_included_in_prompt_when_present():
     prompt = converse.call_args[0][0]
     assert "Go" in prompt and "critical" in prompt and "PCI" in prompt
 
+def test_app_context_notes_included_in_prompt():
+    from app.agents import nodes
+
+    state = _state()
+    state["app_context"] = {
+        "language": "Go",
+        "notes": "image-service Go module breaks when working-directory drifts from go.mod location",
+    }
+
+    with patch.object(nodes.settings, "USE_MCP_TOOLS", False), \
+         patch.object(
+             nodes,
+             "_converse",
+             return_value='{"root_cause":"x","severity":"low"}',
+         ) as converse:
+        nodes.analyse_root_cause(state)
+
+    prompt = converse.call_args[0][0]
+    assert "working-directory drifts from go.mod location" in prompt
+
 def test_generate_fix_skips_bedrock_when_code_level_flagged():
     from app.agents import nodes
 

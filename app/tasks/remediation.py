@@ -39,7 +39,7 @@ def _load_app_context(session: Session, org_login: str, repo_name: str) -> dict 
     row = session.execute(
         text(
             """
-            SELECT risk_tier, regulatory_scope, language, framework
+            SELECT risk_tier, regulatory_scope, language, framework, notes
             FROM application_contexts
             WHERE org_login = :org AND repo_name = :repo
             """
@@ -53,6 +53,7 @@ def _load_app_context(session: Session, org_login: str, repo_name: str) -> dict 
         "regulatory_scope": row[1] or [],
         "language": row[2],
         "framework": row[3],
+        "notes": row[4],
     }
 
 def _compress_logs(text: str, max_lines: int = 200) -> str:

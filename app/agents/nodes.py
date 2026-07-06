@@ -213,12 +213,19 @@ def classify_failure(state: AgentState) -> AgentState:
 def _app_context_block(app_context: dict | None) -> str:
     if not app_context:
         return "Application context: none on file for this repo.\n\n"
-    return (
+    block = (
         f"Application context: language={app_context.get('language') or 'unknown'}, "
         f"framework={app_context.get('framework') or 'unknown'}, "
         f"risk_tier={app_context.get('risk_tier') or 'unset'}, "
-        f"regulatory_scope={app_context.get('regulatory_scope') or []}\n\n"
+        f"regulatory_scope={app_context.get('regulatory_scope') or []}\n"
     )
+    notes = (app_context.get("notes") or "").strip()
+    if notes:
+        block += (
+            "Known failure modes / architecture notes for this application "
+            f"(from its uploaded context file):\n{notes[:2000]}\n"
+        )
+    return block + "\n"
 
 def analyse_root_cause(state: AgentState) -> AgentState:
     prompt = (
