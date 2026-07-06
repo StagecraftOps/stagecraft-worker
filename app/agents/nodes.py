@@ -210,17 +210,35 @@ def classify_failure(state: AgentState) -> AgentState:
     trace.append(f"classify_failure → {category}")
     return {**state, "failure_category": category, "agent_trace": trace}
 
+def _app_context_block(app_context: dict | None) -> str:
+    if not app_context:
+        return "Application context: none on file for this repo.\n\n"
+    return (
+        f"Application context: language={app_context.get('language') or 'unknown'}, "
+        f"framework={app_context.get('framework') or 'unknown'}, "
+        f"risk_tier={app_context.get('risk_tier') or 'unset'}, "
+        f"regulatory_scope={app_context.get('regulatory_scope') or []}\n\n"
+    )
+
 def analyse_root_cause(state: AgentState) -> AgentState:
     prompt = (
         f"Repository: {state['repo_owner']}/{state['repo_name']}\n"
         f"Run ID: {state.get('run_id', '')}\n"
         f"Failure category: {state['failure_category']}\n\n"
+        f"{_app_context_block(state.get('app_context'))}"
         f"Workflow YAML:\n{state['workflow_yaml'][:3000]}\n\n"
         f"Logs:\n{state['logs'][:4000]}\n\n"
         "Identify the specific root cause. If MCP enrichment is enabled and the supplied "
         "context is insufficient, call get_run_logs with owner, repo, and run_id; or call "
-        "get_workflow_yaml with owner, repo, path, and ref. "
-        'Respond in JSON: {"root_cause": "...", "severity": "low|medium|high|critical"}'
+        "get_workflow_yaml with owner, repo, path, and ref.\n\n"
+        "Also judge whether this failure is fixable by changing the WORKFLOW YAML (a pipeline "
+        "misconfiguration -- wrong secret name, missing permissions, bad runner OS, invalid version "
+        "pin, wrong working-directory) versus something that can only be fixed by changing the "
+        "APPLICATION'S OWN SOURCE CODE OR REPOSITORY CONTENT (a missing/malformed packaging manifest, "
+        "a real failing test assertion, a missing service directory, a genuine application logic bug). "
+        "Use the application context above (language/framework) to inform this judgment when relevant. "
+        'Respond in JSON: {"root_cause": "...", "severity": "low|medium|high|critical", '
+        '"likely_code_level": true|false, "code_level_reasoning": "one sentence, empty string if likely_code_level is false"}'
     )
     if settings.USE_MCP_TOOLS:
         raw = _converse_with_tools(
@@ -235,9 +253,21 @@ def analyse_root_cause(state: AgentState) -> AgentState:
     parsed = _parse_json(raw)
     root_cause = parsed.get("root_cause", raw) if parsed else raw
     severity = parsed.get("severity", "medium") if parsed else "medium"
+    likely_code_level = bool(parsed.get("likely_code_level", False)) if parsed else False
+    code_level_reasoning = parsed.get("code_level_reasoning", "") if parsed else ""
     trace = state.get("agent_trace", [])
-    trace.append(f"analyse_root_cause → severity={severity}")
-    return {**state, "root_cause": root_cause, "root_cause_severity": severity, "agent_trace": trace}
+    trace.append(
+        f"analyse_root_cause → severity={severity}"
+        + (f", likely_code_level=True ({code_level_reasoning})" if likely_code_level else "")
+    )
+    return {
+        **state,
+        "root_cause": root_cause,
+        "root_cause_severity": severity,
+        "likely_code_level": likely_code_level,
+        "code_level_reasoning": code_level_reasoning,
+        "agent_trace": trace,
+    }
 
 def _strip_fences(text: str) -> str:
     t = text.strip()
@@ -302,6 +332,14 @@ def generate_fix(state: AgentState) -> AgentState:
     import yaml
 
     trace = state.get("agent_trace", [])
+
+    if state.get("likely_code_level"):
+        trace.append(
+            "generate_fix → skipped: root cause flagged as application-code-level, "
+            "not a pipeline YAML fix"
+        )
+        return {**state, "suggested_yaml": "", "agent_trace": trace}
+
     client = BedrockRemediationClient()
     original = state["workflow_yaml"]
 

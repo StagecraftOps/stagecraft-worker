@@ -11,8 +11,11 @@ class AgentState(TypedDict, total=False):
     run_id: int
     github_token: str
     failure_category: str
+    app_context: dict | None
     root_cause: str
     root_cause_severity: str
+    likely_code_level: bool
+    code_level_reasoning: str
     suggested_yaml: str
     security_risk_score: int
     security_findings: list[str]

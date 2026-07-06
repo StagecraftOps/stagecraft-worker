@@ -35,6 +35,26 @@ SyncSessionLocal = sessionmaker(bind=_sync_engine, autocommit=False, autoflush=F
 
 REDIS_EVENTS_CHANNEL = "stagecraft:events"
 
+def _load_app_context(session: Session, org_login: str, repo_name: str) -> dict | None:
+    row = session.execute(
+        text(
+            """
+            SELECT risk_tier, regulatory_scope, language, framework
+            FROM application_contexts
+            WHERE org_login = :org AND repo_name = :repo
+            """
+        ),
+        {"org": org_login, "repo": repo_name},
+    ).fetchone()
+    if not row:
+        return None
+    return {
+        "risk_tier": row[0],
+        "regulatory_scope": row[1] or [],
+        "language": row[2],
+        "framework": row[3],
+    }
+
 def _compress_logs(text: str, max_lines: int = 200) -> str:
     lines = text.splitlines()
     deduped: list[str] = []
@@ -413,6 +433,8 @@ def _update_remediation(
     root_cause: str = "",
     suggested_yaml: str | None = None,
     original_yaml: str | None = None,
+    likely_code_level: bool = False,
+    code_level_reasoning: str | None = None,
     error_message: str | None = None,
     failure_category: str | None = None,
     confidence_score: int | None = None,
@@ -431,6 +453,8 @@ def _update_remediation(
                 root_cause = :root_cause,
                 suggested_yaml = :suggested_yaml,
                 original_yaml = :original_yaml,
+                likely_code_level = :likely_code_level,
+                code_level_reasoning = :code_level_reasoning,
                 error_message = :error_message,
                 failure_category = :failure_category,
                 confidence_score = :confidence_score,
@@ -450,6 +474,8 @@ def _update_remediation(
             "root_cause": root_cause,
             "suggested_yaml": suggested_yaml,
             "original_yaml": original_yaml,
+            "likely_code_level": likely_code_level,
+            "code_level_reasoning": code_level_reasoning,
             "error_message": error_message,
             "failure_category": failure_category,
             "confidence_score": confidence_score,
@@ -652,6 +678,8 @@ def process_failed_workflow(self, message: dict) -> dict:
             except Exception as fm_exc:
                 logger.debug("fix_memories fetch skipped: %s", fm_exc)
 
+            app_context = _load_app_context(session, repo_owner, repo_name)
+
             final_state = remediation_graph.invoke({
                 "repo_owner": repo_owner,
                 "repo_name": repo_name,
@@ -661,6 +689,7 @@ def process_failed_workflow(self, message: dict) -> dict:
                 "head_sha": head_sha,
                 "run_id": run_id,
                 "github_token": github_token,
+                "app_context": app_context,
                 "agent_trace": [],
                 "fix_examples": fix_examples,
             })
@@ -676,6 +705,8 @@ def process_failed_workflow(self, message: dict) -> dict:
             security_risk_score = final_state.get("security_risk_score")
             security_findings = final_state.get("security_findings")
             agent_trace = final_state.get("agent_trace")
+            likely_code_level = final_state.get("likely_code_level", False)
+            code_level_reasoning = final_state.get("code_level_reasoning") or None
             logger.info(
                 "Multi-agent trace: %s | pr_title: %s | security_risk: %s | confidence: %s",
                 agent_trace,
@@ -699,8 +730,10 @@ def process_failed_workflow(self, message: dict) -> dict:
             security_risk_score = None
             security_findings = None
             agent_trace = None
+            likely_code_level = False
+            code_level_reasoning = None
 
-        if not suggested_yaml and root_cause:
+        if not suggested_yaml and root_cause and not likely_code_level:
             logger.warning(
                 "Analysis found root cause but no valid YAML fix for run %s; trying direct Bedrock fallback",
                 run_id,
@@ -714,7 +747,7 @@ def process_failed_workflow(self, message: dict) -> dict:
                 repo_full_name=f"{repo_owner}/{repo_name}",
             )
 
-        if not suggested_yaml:
+        if not suggested_yaml and not likely_code_level:
             suggested_yaml = _heuristic_yaml_fix(
                 workflow_yaml=workflow_yaml,
                 root_cause=root_cause,
@@ -722,13 +755,20 @@ def process_failed_workflow(self, message: dict) -> dict:
             )
 
         if not suggested_yaml:
-            message = "AI identified the root cause but could not produce a valid YAML fix."
+            message = (
+                "Root cause appears to be in the application's own code or repository content, "
+                "not the pipeline configuration -- no automated YAML fix applies."
+                if likely_code_level
+                else "AI identified the root cause but could not produce a valid YAML fix."
+            )
             _update_remediation(
                 session,
                 remediation_id,
                 status="failed",
                 root_cause=root_cause,
                 suggested_yaml=None,
+                likely_code_level=likely_code_level,
+                code_level_reasoning=code_level_reasoning,
                 error_message=message,
                 failure_category=failure_category,
                 confidence_score=0,
@@ -755,7 +795,12 @@ def process_failed_workflow(self, message: dict) -> dict:
                 repo_name=repo_name,
                 agent_name="failure_rca",
                 outcome="needs_review",
-                summary=f"Root cause found for {workflow_file} in {repo_name}, but no valid YAML fix could be produced.",
+                summary=(
+                    f"Flagged as an application code/repo-content issue in {workflow_file} ({repo_name}), "
+                    f"not a pipeline fix: {code_level_reasoning}"
+                    if likely_code_level
+                    else f"Root cause found for {workflow_file} in {repo_name}, but no valid YAML fix could be produced."
+                ),
                 gaps_found=1,
             )
             session.commit()
