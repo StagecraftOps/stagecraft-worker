@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 
@@ -114,18 +115,23 @@ def _converse_with_tools(
             return block["text"].strip()
     return ""
 
+_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL)
+
 def _parse_json(raw: str) -> dict:
     stripped = raw.strip()
-    if stripped.startswith("```"):
-        inner = "\n".join(l for l in stripped.splitlines() if not l.strip().startswith("```")).strip()
+
+    fence_match = _FENCE_RE.search(stripped)
+    if fence_match:
         try:
-            return json.loads(inner)
+            return json.loads(fence_match.group(1).strip())
         except json.JSONDecodeError:
             pass
+
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
         pass
+
     start = stripped.find("{")
     end = stripped.rfind("}")
     if start != -1 and end > start:
@@ -133,6 +139,7 @@ def _parse_json(raw: str) -> dict:
             return json.loads(stripped[start:end + 1])
         except json.JSONDecodeError:
             pass
+
     return {}
 
 _ROOT_CAUSE_TOOLCONFIG = {
