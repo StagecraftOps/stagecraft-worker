@@ -245,6 +245,45 @@ def _strip_fences(text: str) -> str:
         t = "\n".join(l for l in t.splitlines() if not l.strip().startswith("```")).strip()
     return t
 
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF"
+    "\U0000FE0F"
+    "]+"
+)
+
+def _strip_emojis(text: str) -> str:
+    return _EMOJI_PATTERN.sub("", text)
+
+_INLINE_COMMENT = re.compile(r"(?<!['\"])\s#[^\n]*$")
+
+def _strip_hallucinated_comments(original: str, candidate: str) -> str:
+    original_comment_lines = {
+        line.strip() for line in original.splitlines() if line.strip().startswith("#")
+    }
+    original_text = original
+
+    kept = []
+    for line in candidate.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if stripped not in original_comment_lines:
+                continue
+            kept.append(line)
+            continue
+
+        if "#" in line and line not in original_text.splitlines():
+            quote_parity_ok = line.count('"') % 2 == 0 and line.count("'") % 2 == 0
+            match = _INLINE_COMMENT.search(line)
+            if quote_parity_ok and match and match.group(0).strip() not in original_text:
+                line = line[: match.start()]
+        kept.append(line)
+    return "\n".join(kept)
+
 def _validate_fix(original: str, fixed: str) -> tuple[bool, str]:
     if not fixed or not fixed.strip():
         return False, "empty output"
@@ -310,6 +349,8 @@ def generate_fix(state: AgentState) -> AgentState:
                 continue
 
         candidate = _strip_fences(raw_candidate)
+        candidate = _strip_emojis(candidate)
+        candidate = _strip_hallucinated_comments(original, candidate)
 
         import re
         lines = []

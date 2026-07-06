@@ -215,6 +215,9 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
             "each other and as they had in the original file. Never shift the indentation "
             "of a line you are not changing, even by one space.\n"
             "6. If a version is clearly invalid (e.g. '99', '0'), replace with the stable version above.\n"
+            "7. Never use emoji characters anywhere in the output.\n"
+            "8. Never add a comment (# ...) that did not already exist in the original YAML -- no "
+            "explanatory, celebratory, or narrating comments about the fix.\n"
             "Output the corrected YAML now:"
         )
         max_retries = 2
@@ -269,6 +272,8 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
             "2. Output ONLY the corrected YAML. Zero prose. Zero markdown code fences (no ```).\n"
             "3. Copy every other line byte-for-byte, including its exact leading whitespace. "
             "Do not re-indent or otherwise touch any line the error message doesn't point to.\n"
+            "4. Never use emoji characters or add a new comment (# ...) that did not already exist "
+            "in the original YAML.\n"
             "Output the corrected YAML now:"
         )
 

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -62,12 +63,53 @@ def _strip_code_fences(text: str) -> str:
         ).strip()
     return value
 
+_EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F300-\U0001FAFF"
+    "\U00002600-\U000027BF"
+    "\U0001F1E6-\U0001F1FF"
+    "\U00002190-\U000021FF"
+    "\U00002B00-\U00002BFF"
+    "\U0000FE0F"
+    "]+"
+)
+
+def _strip_emojis(text: str) -> str:
+    return _EMOJI_PATTERN.sub("", text)
+
+_INLINE_COMMENT = re.compile(r"(?<!['\"])\s#[^\n]*$")
+
+def _strip_hallucinated_comments(original: str, candidate: str) -> str:
+    original_comment_lines = {
+        line.strip() for line in original.splitlines() if line.strip().startswith("#")
+    }
+    original_text = original
+
+    kept = []
+    for line in candidate.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            if stripped not in original_comment_lines:
+                continue
+            kept.append(line)
+            continue
+
+        if "#" in line and line not in original_text.splitlines():
+            quote_parity_ok = line.count('"') % 2 == 0 and line.count("'") % 2 == 0
+            match = _INLINE_COMMENT.search(line)
+            if quote_parity_ok and match and match.group(0).strip() not in original_text:
+                line = line[: match.start()]
+        kept.append(line)
+    return "\n".join(kept)
+
 def _normalize_suggested_yaml(original: str, candidate: str | None) -> tuple[bool, str]:
     normalized = _strip_code_fences(candidate or "")
     if not normalized:
         return False, "empty output"
 
-    import re
+    normalized = _strip_emojis(normalized)
+    normalized = _strip_hallucinated_comments(original, normalized)
+
     lines = []
     spacing_pattern = re.compile(r"^([ \t]*[a-zA-Z0-9_-]+):(?!\s)(.+)$")
     for line in normalized.splitlines():
@@ -369,6 +411,7 @@ def _update_remediation(
     status: str,
     root_cause: str = "",
     suggested_yaml: str | None = None,
+    original_yaml: str | None = None,
     error_message: str | None = None,
     failure_category: str | None = None,
     confidence_score: int | None = None,
@@ -386,6 +429,7 @@ def _update_remediation(
                 status = :status,
                 root_cause = :root_cause,
                 suggested_yaml = :suggested_yaml,
+                original_yaml = :original_yaml,
                 error_message = :error_message,
                 failure_category = :failure_category,
                 confidence_score = :confidence_score,
@@ -404,6 +448,7 @@ def _update_remediation(
             "status": status,
             "root_cause": root_cause,
             "suggested_yaml": suggested_yaml,
+            "original_yaml": original_yaml,
             "error_message": error_message,
             "failure_category": failure_category,
             "confidence_score": confidence_score,
@@ -713,6 +758,7 @@ def process_failed_workflow(self, message: dict) -> dict:
             status="analyzed",
             root_cause=root_cause,
             suggested_yaml=suggested_yaml,
+            original_yaml=workflow_yaml,
             failure_category=failure_category,
             confidence_score=confidence_score,
             confidence_reasoning=confidence_reasoning,

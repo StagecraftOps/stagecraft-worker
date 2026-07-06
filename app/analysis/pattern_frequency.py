@@ -6,6 +6,14 @@ import yaml
 _VERSION_SPLIT = re.compile(r"^(.*)@([^@]+)$")
 _MIN_COMPONENTS_FOR_SIGNAL = 2
 
+def classify_pattern_type(signature: tuple[str, ...]) -> str:
+    if len(signature) != 1:
+        return "JOB"
+    component = signature[0]
+    if ".github/workflows/" in component or component.endswith((".yml", ".yaml")):
+        return "WORKFLOW"
+    return "ACTION"
+
 def _strip_version(uses: str) -> str:
     match = _VERSION_SPLIT.match(uses)
     return match.group(1) if match else uses
@@ -58,7 +66,11 @@ def find_repeated_patterns(
         pattern_hash = hashlib.sha256("|".join(signature).encode()).hexdigest()
         clusters.append({
             "pattern_hash": pattern_hash,
-            "pattern_signature": {"components": list(signature), "match_type": "exact"},
+            "pattern_signature": {
+                "components": list(signature),
+                "match_type": "exact",
+                "candidate_type": classify_pattern_type(signature),
+            },
             "occurrence_count": len(files),
             "example_workflow_files": sorted(files)[:5],
         })

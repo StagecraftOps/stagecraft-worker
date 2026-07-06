@@ -12,6 +12,7 @@ from app.analysis.template_diff import diff_workflow_against_template
 from app.core.celery_app import app
 from app.services.bedrock_client import BedrockRemediationClient
 from app.services.github_client import GitHubRemediationClient
+from app.tasks.agent_report import record_agent_run
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
 
 logger = logging.getLogger(__name__)
@@ -131,6 +132,7 @@ def run_pattern_frequency_task(self, message: dict) -> dict:
                 "pattern_signature": {
                     "components": all_components,
                     "match_type": "semantic",
+                    "candidate_type": "JOB",
                     "pattern_name": verdict["pattern_name"],
                     "draft_template_yaml": verdict["draft_template_yaml"],
                 },
@@ -163,6 +165,29 @@ def run_pattern_frequency_task(self, message: dict) -> dict:
                     "computed_at": now,
                 },
             )
+        record_agent_run(
+            session,
+            org_login=org_login,
+            repo_name=repo_name,
+            agent_name="standardization",
+            outcome="needs_review" if clusters else "success",
+            summary=(
+                f"{len(clusters)} reusable-component opportunity(ies) found in {repo_name}: repeated job "
+                f"logic not yet using a shared action/job/workflow." if clusters
+                else f"No reuse/duplication opportunities found in {repo_name}."
+            ),
+            gaps_found=len(clusters),
+            evidence={
+                "clusters": [
+                    {
+                        "candidate_type": c["pattern_signature"].get("candidate_type"),
+                        "occurrence_count": c["occurrence_count"],
+                        "example_workflow_files": c["example_workflow_files"],
+                    }
+                    for c in clusters
+                ]
+            },
+        )
         session.commit()
 
         return {"status": "completed", "org_login": org_login, "patterns_found": len(clusters)}
