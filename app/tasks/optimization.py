@@ -1,11 +1,3 @@
-"""Celery task for FR-7/FR-8/FR-9: bottleneck detection, optimization
-recommendations, and future-state simulation for one workflow file.
-
-Reuses FR-1's stored dependency graph (graph_nodes/graph_edges) and FR-2's
-job timing tables (job_runs/critical_path_results) directly via raw SQL —
-same DB, same pattern the worker already uses for every other table it
-doesn't own an ORM model for.
-"""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -23,16 +15,11 @@ from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, e
 
 logger = logging.getLogger(__name__)
 
-
 def _job_name_from_key(external_key: str) -> str:
-    # job external_key format: "job::<workflow_file>::<job_id>"
+
     return external_key.rsplit("::", 1)[-1]
 
-
 def _fetch_job_edges_neo4j(org_login: str, repo_name: str, workflow_file: str, rel: str) -> list[tuple[str, str]]:
-    """Cypher equivalent of the graph_edges/graph_nodes JOIN below. No need to
-    first look up the latest completed graph_id — Neo4j nodes carry org_login/
-    repo_name/workflow_file directly, so this is a single MATCH."""
     with get_driver().session() as neo_session:
         result = neo_session.run(
             f"""
@@ -45,7 +32,6 @@ def _fetch_job_edges_neo4j(org_login: str, repo_name: str, workflow_file: str, r
         )
         return [(_job_name_from_key(r["source_key"]), _job_name_from_key(r["target_key"])) for r in result]
 
-
 def _has_dependency_graph_neo4j(org_login: str, repo_name: str, workflow_file: str) -> bool:
     with get_driver().session() as neo_session:
         record = neo_session.run(
@@ -54,7 +40,6 @@ def _has_dependency_graph_neo4j(org_login: str, repo_name: str, workflow_file: s
             org=org_login, repo=repo_name, wf=workflow_file,
         ).single()
         return bool(record and record["c"] > 0)
-
 
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def run_optimization_analysis_task(self, message: dict) -> dict:
@@ -66,11 +51,7 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
     session = SyncSessionLocal()
     github: GitHubRemediationClient | None = None
     try:
-        # The graphs row (Postgres build metadata) is always maintained
-        # regardless of GRAPH_BACKEND — dual-write is additive, it never
-        # disables the Postgres write. optimization_recommendations.graph_id
-        # references it either way; only the needs/needs_output edge lookup
-        # below branches on which store actually serves them.
+
         graph_row = session.execute(
             text(
                 """
@@ -121,8 +102,6 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
             ).fetchall()
             needs_output_edges = [(_job_name_from_key(s), _job_name_from_key(t)) for s, t in output_rows]
 
-        # Historical job durations across the org (for the bottleneck baseline)
-        # and the most recent run's per-job durations + critical path.
         history_rows = session.execute(
             text(
                 """

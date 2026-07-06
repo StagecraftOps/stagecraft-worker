@@ -1,8 +1,3 @@
-"""Peer Review Agent nodes — reviews a pull request's diff for CI/CD-relevant
-risk. Read-only: never comments/writes to GitHub itself (that's a separate,
-not-yet-built write step, matching the failure-remediation agent's pattern of
-keeping AI suggestion separate from any GitHub write action).
-"""
 import re
 
 from app.agents.nodes import _converse, _parse_json
@@ -10,9 +5,7 @@ from app.agents.peer_review_state import PeerReviewState
 
 _WORKFLOW_FILE_PATTERN = re.compile(r"^diff --git a/(\S+) b/\S+", re.MULTILINE)
 
-
 def detect_workflow_changes(state: PeerReviewState) -> PeerReviewState:
-    """Deterministic: which .github/workflows/* files this PR touches. No AI."""
     diff = state.get("diff", "")
     changed = [
         path for path in _WORKFLOW_FILE_PATTERN.findall(diff)
@@ -22,9 +15,7 @@ def detect_workflow_changes(state: PeerReviewState) -> PeerReviewState:
     trace.append(f"detect_workflow_changes: {len(changed)} CI file(s) touched")
     return {**state, "changed_workflow_files": changed, "agent_trace": trace}
 
-
 def review_diff(state: PeerReviewState) -> PeerReviewState:
-    """Single Bedrock call: assess the PR diff for correctness/security/governance risk."""
     diff = state.get("diff", "")
     changed_files = state.get("changed_workflow_files", [])
 

@@ -13,7 +13,6 @@ _PATTERNS = [
 
 MAX_LOG_LINES = 300
 
-
 def scrub(text: str) -> str:
     lines = text.splitlines()
     if len(lines) > MAX_LOG_LINES:

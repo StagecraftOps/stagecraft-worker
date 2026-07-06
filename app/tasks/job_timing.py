@@ -1,9 +1,3 @@
-"""Celery task: sync per-job timing for a completed run and compute its critical path.
-
-Fired fire-and-forget right after a workflow_run reaches 'completed' (same
-pattern as the embeddings/email side-effects in tasks/remediation.py) — a
-failure here must never affect the remediation flow.
-"""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -18,7 +12,6 @@ from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
 
 logger = logging.getLogger(__name__)
 
-
 def _parse_gh_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -27,26 +20,18 @@ def _parse_gh_timestamp(value: str | None) -> datetime | None:
     except ValueError:
         return None
 
-
 def _duration_seconds(started: datetime | None, completed: datetime | None) -> int | None:
     if not started or not completed:
         return None
     return max(0, int((completed - started).total_seconds()))
 
-
 def _match_job_id(gh_job_name: str, parsed_job_ids: list[str]) -> str | None:
-    """Match a GitHub Jobs API job name back to its workflow-yaml job id.
-
-    Matrix jobs are reported by GitHub as "<job_id> (<matrix values>)" — an
-    exact match covers the common case, a prefix match covers matrix fan-out.
-    """
     if gh_job_name in parsed_job_ids:
         return gh_job_name
     for job_id in parsed_job_ids:
         if gh_job_name.startswith(f"{job_id} ("):
             return job_id
     return None
-
 
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def sync_job_timings_task(self, message: dict) -> dict:
@@ -76,12 +61,6 @@ def sync_job_timings_task(self, message: dict) -> dict:
             completed = _parse_gh_timestamp(gh_job.get("completed_at"))
             duration = _duration_seconds(started, completed)
 
-            # labels/runner_group_name (e.g. labels=["ubuntu-latest"] or
-            # ["self-hosted","linux","x64"]) are what actually distinguish
-            # runner *type* -- runner_name alone is just GitHub's ephemeral
-            # instance name ("GitHub Actions 1000000519"), uninformative for
-            # a runner-type breakdown, and both are only ever populated once
-            # a runner is actually assigned (empty/null for a job still queued).
             row = session.execute(
                 text(
                     """
@@ -156,9 +135,6 @@ def sync_job_timings_task(self, message: dict) -> dict:
 
         session.commit()
 
-        # Parse the workflow YAML at this commit for needs: edges, then match
-        # GitHub's job names back to workflow-yaml job ids to compute the
-        # critical path over real durations.
         try:
             workflow_yaml = github.get_workflow_yaml(repo_owner, repo_name, workflow_file, head_sha)
             _, edges = parse_workflow(workflow_file, workflow_yaml)
@@ -180,7 +156,7 @@ def sync_job_timings_task(self, message: dict) -> dict:
                 for e in edges
                 if e["edge_type"] == "needs"
             ]
-            # Translate parsed job ids in needs_edges back to GH job names where matched.
+
             parsed_to_gh = {v: k for k, v in name_to_parsed.items()}
             translated_edges = [
                 (parsed_to_gh.get(s, s), parsed_to_gh.get(t, t)) for s, t in needs_edges

@@ -1,11 +1,3 @@
-"""Tests for the lifecycle-aware _upsert_workflow_run function.
-
-A single GitHub Actions run fires multiple webhook deliveries:
-  queued -> in_progress -> completed (success or failure)
-
-Each delivery must update the same DB row (ON CONFLICT DO UPDATE), not insert
-a duplicate or be silently ignored.
-"""
 import os
 import uuid
 from unittest.mock import MagicMock, patch
@@ -16,7 +8,6 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("SECRET_KEY", "test-secret-for-worker")
 
 def _make_session_mock():
-    """Return a mock that records the SQL texts passed to execute()."""
     session = MagicMock()
     returning_row = MagicMock()
     returning_row.fetchone.return_value = (str(uuid.uuid4()),)
@@ -56,7 +47,6 @@ class TestUpsertWorkflowRun:
         assert "DO UPDATE" in sql_text
 
     def test_upsert_sql_coalesces_started_at(self):
-        """COALESCE(EXCLUDED.started_at, ...) must preserve an earlier started_at."""
         from app.tasks.remediation import _upsert_workflow_run
 
         session = _make_session_mock()
@@ -89,7 +79,6 @@ class TestUpsertWorkflowRun:
         assert params["conclusion"] == "success"
 
     def test_null_started_at_on_queued_event(self):
-        """Queued events have no started_at; upsert must not crash on None."""
         from app.tasks.remediation import _upsert_workflow_run
 
         session = _make_session_mock()
@@ -100,7 +89,6 @@ class TestUpsertWorkflowRun:
         assert params["started_at"] is None
 
     def test_html_url_falls_back_to_constructed_url(self):
-        """If html_url is missing, a GitHub URL is constructed from owner/repo/run_id."""
         from app.tasks.remediation import _upsert_workflow_run
 
         session = _make_session_mock()

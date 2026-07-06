@@ -17,13 +17,7 @@ logger = logging.getLogger(__name__)
 _MAX_RETRIES = 2
 _MAX_TOOL_ROUNDS = 6
 
-# Read-only GitHub tools routed to stagecraft-mcp. Write tools are NOT exposed
-# here — PRs are raised only via the api-service after human review.
 _GITHUB_TOOLS = {"get_workflow_yaml", "get_run_logs"}
-
-# ---------------------------------------------------------------------------
-# Bedrock Converse helpers
-# ---------------------------------------------------------------------------
 
 def _bedrock_client():
     client = boto3.client(
@@ -34,9 +28,7 @@ def _bedrock_client():
     _apply_bedrock_api_key(client)
     return client
 
-
 def _converse(prompt: str, max_tokens: int = 2048, temperature: float = 0.0) -> str:
-    """Single-turn Bedrock Converse call. Retries on throttle."""
     client = _bedrock_client()
     for attempt in range(_MAX_RETRIES + 1):
         try:
@@ -52,21 +44,12 @@ def _converse(prompt: str, max_tokens: int = 2048, temperature: float = 0.0) -> 
                 continue
             raise
 
-
 def _converse_with_tools(
     prompt: str,
     tool_config: dict,
     github_token: str | None = None,
     max_tokens: int = 4096,
 ) -> str:
-    """Agentic Converse loop with tool-use.
-
-    Calls the model with toolConfig; if the model wants to call a tool,
-    we route it to the matching MCP server via mcp_client.call_tool, then
-    feed the result back. Loops until a final text response or _MAX_TOOL_ROUNDS
-    is exhausted. MCP failures are caught and fed back as error strings so a
-    flaky tool never stalls the pipeline.
-    """
     client = _bedrock_client()
     messages = [{"role": "user", "content": [{"text": prompt}]}]
     assistant_content: list = []
@@ -131,9 +114,7 @@ def _converse_with_tools(
             return block["text"].strip()
     return ""
 
-
 def _parse_json(raw: str) -> dict:
-    """Extract JSON from a model response that may have prose or fences around it."""
     stripped = raw.strip()
     if stripped.startswith("```"):
         inner = "\n".join(l for l in stripped.splitlines() if not l.strip().startswith("```")).strip()
@@ -154,9 +135,6 @@ def _parse_json(raw: str) -> dict:
             pass
     return {}
 
-
-# Tool config for root_cause — model may call get_run_logs or get_workflow_yaml
-# via the in-cluster stagecraft-mcp SSE server.
 _ROOT_CAUSE_TOOLCONFIG = {
     "tools": [
         {
@@ -209,11 +187,6 @@ _ROOT_CAUSE_TOOLCONFIG = {
     ]
 }
 
-
-# ---------------------------------------------------------------------------
-# Pipeline nodes
-# ---------------------------------------------------------------------------
-
 def classify_failure(state: AgentState) -> AgentState:
     prompt = (
         f"Workflow file: {state['workflow_file']}\n\n"
@@ -229,7 +202,6 @@ def classify_failure(state: AgentState) -> AgentState:
     trace = state.get("agent_trace", [])
     trace.append(f"classify_failure → {category}")
     return {**state, "failure_category": category, "agent_trace": trace}
-
 
 def analyse_root_cause(state: AgentState) -> AgentState:
     prompt = (
@@ -260,13 +232,11 @@ def analyse_root_cause(state: AgentState) -> AgentState:
     trace.append(f"analyse_root_cause → severity={severity}")
     return {**state, "root_cause": root_cause, "root_cause_severity": severity, "agent_trace": trace}
 
-
 def _strip_fences(text: str) -> str:
     t = text.strip()
     if t.startswith("```"):
         t = "\n".join(l for l in t.splitlines() if not l.strip().startswith("```")).strip()
     return t
-
 
 def _validate_fix(original: str, fixed: str) -> tuple[bool, str]:
     if not fixed or not fixed.strip():
@@ -281,7 +251,6 @@ def _validate_fix(original: str, fixed: str) -> tuple[bool, str]:
         return False, "no change from original"
     return True, "ok"
 
-
 def generate_fix(state: AgentState) -> AgentState:
     from app.services.bedrock_client import BedrockRemediationClient
     import yaml
@@ -290,11 +259,8 @@ def generate_fix(state: AgentState) -> AgentState:
     client = BedrockRemediationClient()
     original = state["workflow_yaml"]
 
-    # Workflow YAMLs are almost always short; cap at 8000 chars to avoid
-    # token bloat if someone commits a monster monorepo workflow file.
     compressed_yaml = original[:8000] if len(original) > 8000 else original
 
-    # Build few-shot context from fix_memories accepted examples.
     fix_examples = state.get("fix_examples") or []
     few_shot_block = ""
     if fix_examples:
@@ -308,7 +274,6 @@ def generate_fix(state: AgentState) -> AgentState:
     last_error_context = "unknown"
     candidate = None
 
-    # Try up to 3 times (1 initial attempt + 2 correction attempts)
     for attempt in range(3):
         if attempt == 0:
             logger.info("Attempt 1: Generating initial YAML fix from Bedrock")
@@ -338,8 +303,7 @@ def generate_fix(state: AgentState) -> AgentState:
                 continue
 
         candidate = _strip_fences(raw_candidate)
-        
-        # Post-process to fix common formatting anomalies where colons lack trailing space
+
         import re
         lines = []
         spacing_pattern = re.compile(r"^([ \t]*[a-zA-Z0-9_-]+):(?!\s)(.+)$")
@@ -351,7 +315,6 @@ def generate_fix(state: AgentState) -> AgentState:
                 lines.append(line)
         candidate = "\n".join(lines)
 
-        # Validate the candidate
         if not candidate or not candidate.strip():
             last_error_context = "Validation failed: Suggested YAML is empty."
             logger.warning(f"generate_fix attempt {attempt + 1} validation failed: {last_error_context}")
@@ -369,7 +332,6 @@ def generate_fix(state: AgentState) -> AgentState:
                 logger.warning(f"generate_fix attempt {attempt + 1} validation failed: {last_error_context}")
                 continue
 
-            # If all checks pass, we have our valid YAML!
             fixed = candidate
             break
 
@@ -383,7 +345,6 @@ def generate_fix(state: AgentState) -> AgentState:
 
     trace.append(f"generate_fix → suggested_yaml produced on attempt {attempt + 1} (validated)")
     return {**state, "suggested_yaml": fixed, "agent_trace": trace}
-
 
 def review_security(state: AgentState) -> AgentState:
     trace = state.get("agent_trace", [])
@@ -408,7 +369,6 @@ def review_security(state: AgentState) -> AgentState:
     trace.append(f"review_security → risk_score={risk_score}, findings={len(findings)}")
     return {**state, "security_risk_score": risk_score, "security_findings": findings, "agent_trace": trace}
 
-
 def write_pr_description(state: AgentState) -> AgentState:
     findings_text = "\n".join(f"- {f}" for f in state.get("security_findings", [])) or "None identified"
     prompt = (
@@ -432,12 +392,10 @@ def write_pr_description(state: AgentState) -> AgentState:
     trace.append("write_pr_description → done")
     return {**state, "pr_title": pr_title, "pr_description": pr_description, "agent_trace": trace}
 
-
 def should_block_high_risk(state: AgentState) -> str:
     if state.get("security_risk_score", 0) >= 8:
         return "block"
     return "approve"
-
 
 def score_confidence(state: AgentState) -> AgentState:
     from app.services.bedrock_client import BedrockRemediationClient

@@ -1,4 +1,3 @@
-"""Celery task: run the Peer Review Agent against a new/updated pull request."""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -11,7 +10,6 @@ from app.services.github_client import GitHubRemediationClient
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org, _publish_event
 
 logger = logging.getLogger(__name__)
-
 
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def process_pull_request(self, message: dict) -> dict:

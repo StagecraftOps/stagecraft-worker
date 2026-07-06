@@ -1,14 +1,3 @@
-"""FR-11: builds the org-wide knowledge graph by cross-linking governance
-findings, remediation failures, and optimization recommendations into
-graph_type='knowledge' rows that reference graph_type='dependency' node ids
-directly — same graph_nodes/graph_edges tables from FR-1, no separate store.
-
-When GRAPH_DUAL_WRITE_NEO4J is set, the same cross-links are additionally
-written to Neo4j as real GovernanceRule/Failure/RuntimeMetric nodes MERGEd
-onto the org's existing Workflow nodes via GOVERNS/CAUSED_BY/MEASURED_BY
-relationships — no graph_id partitioning needed there, since nodes are
-identified by (org_login, node_type, external_key) directly.
-"""
 import uuid
 from datetime import datetime, timezone
 
@@ -29,13 +18,7 @@ _KNOWLEDGE_RELS = {
     "measured_by": "MEASURED_BY",
 }
 
-
 def _failure_display_name(failure_category: str | None, root_cause: str | None) -> str:
-    """classify_failure (app/agents/nodes.py) has a fixed enum of specific
-    categories plus a literal "UNKNOWN" catch-all for whatever it couldn't
-    confidently bucket -- a real, valid classification, but useless as a
-    graph node label (tells the viewer nothing). Treat it the same as no
-    category at all and fall back to the actual root cause text."""
     has_specific_category = bool(failure_category) and failure_category.strip().upper() != "UNKNOWN"
     if has_specific_category:
         return failure_category
@@ -43,10 +26,7 @@ def _failure_display_name(failure_category: str | None, root_cause: str | None) 
         return root_cause[:60]
     return "Unclassified failure"
 
-
 def _clear_knowledge_nodes_tx(tx, org_login: str) -> None:
-    """Scoped to exactly the 3 knowledge-graph label types for this org —
-    never touches Workflow/Job/etc. (owned by dependency-graph rebuilds)."""
     tx.run(
         """
         MATCH (n:GraphNode {org_login: $org})
@@ -56,14 +36,13 @@ def _clear_knowledge_nodes_tx(tx, org_login: str) -> None:
         org=org_login,
     )
 
-
 def _upsert_knowledge_node_and_edge_tx(
     tx, org_login: str, node_type: str, external_key: str, display_name: str,
     repo_name: str, workflow_file: str, rel_type: str,
 ) -> None:
     label = _KNOWLEDGE_LABELS[node_type]
     rel = _KNOWLEDGE_RELS[rel_type]
-    identity = f"{org_login}::::{external_key}"  # org-wide identity — see graph_builder._identity_key
+    identity = f"{org_login}::::{external_key}"
     tx.run(
         f"""
         MERGE (n:GraphNode:{label} {{identity_key: $identity}})
@@ -80,9 +59,7 @@ def _upsert_knowledge_node_and_edge_tx(
         dname=display_name, repo=repo_name, wf=workflow_file,
     )
 
-
 def _find_dependency_workflow_node(session: Session, org_login: str, repo_name: str, workflow_file: str) -> uuid.UUID | None:
-    """Look up the workflow node from the latest completed dependency graph for this repo."""
     row = session.execute(
         text(
             """
@@ -96,7 +73,6 @@ def _find_dependency_workflow_node(session: Session, org_login: str, repo_name: 
         {"org": org_login, "repo": repo_name, "wf": workflow_file},
     ).fetchone()
     return row[0] if row else None
-
 
 def _upsert_node(session: Session, graph_id: uuid.UUID, node_type: str, external_key: str, display_name: str) -> uuid.UUID:
     existing = session.execute(
@@ -121,7 +97,6 @@ def _upsert_node(session: Session, graph_id: uuid.UUID, node_type: str, external
     )
     return node_id
 
-
 def _add_edge(session: Session, graph_id: uuid.UUID, source_id: uuid.UUID, target_id: uuid.UUID, edge_type: str) -> None:
     session.execute(
         text(
@@ -136,9 +111,7 @@ def _add_edge(session: Session, graph_id: uuid.UUID, source_id: uuid.UUID, targe
         },
     )
 
-
 def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, int, int]:
-    """Build/refresh the org's knowledge graph. Returns (graph_id, node_count, edge_count)."""
     now = datetime.now(timezone.utc)
     graph_id = uuid.uuid4()
     session.execute(
@@ -159,7 +132,6 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
         neo_session = get_driver().session()
         neo_session.execute_write(_clear_knowledge_nodes_tx, org_login)
 
-    # governance_rule nodes <-governs- compliance findings, linked to the dependency graph's workflow node
     findings = session.execute(
         text(
             """
@@ -182,7 +154,6 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
                 f"governance_rule::{requirement_id}", requirement_id, repo_name, workflow_file, "governs",
             )
 
-    # failure nodes <-caused_by- remediations, linked to the dependency graph's workflow node
     remediations = session.execute(
         text(
             """
@@ -208,7 +179,6 @@ def build_knowledge_graph(session: Session, org_login: str) -> tuple[uuid.UUID, 
                 f"failure::{remediation_id}", display_name, repo_name, workflow_file, "caused_by",
             )
 
-    # runtime_metric nodes <-measured_by- optimization recommendations, linked to the workflow node
     recommendations = session.execute(
         text(
             """

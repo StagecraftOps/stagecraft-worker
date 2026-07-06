@@ -6,16 +6,7 @@ import boto3
 
 from app.core.config import settings
 
-
-
 def _bedrock_boto3_kwargs() -> dict:
-    """Return boto3 keyword args for Bedrock clients.
-
-    Priority order:
-    1. BEDROCK_API_KEY (ABSK bearer token) — dummy IAM creds used; token injected later via _apply_bedrock_api_key.
-    2. BEDROCK_CROSS_ACCOUNT_ROLE_ARN — assumes the role and returns short-lived creds.
-    3. Empty dict — boto3 uses the pod's IRSA role directly.
-    """
     if settings.BEDROCK_API_KEY:
         return {"aws_access_key_id": "dummy", "aws_secret_access_key": "dummy"}
     if not settings.BEDROCK_CROSS_ACCOUNT_ROLE_ARN:
@@ -33,9 +24,7 @@ def _bedrock_boto3_kwargs() -> dict:
         "aws_session_token": creds["SessionToken"],
     }
 
-
 def _apply_bedrock_api_key(client) -> None:
-    """If BEDROCK_API_KEY is set, inject it as a Bearer token on every Bedrock request."""
     if not settings.BEDROCK_API_KEY:
         return
     api_key = settings.BEDROCK_API_KEY
@@ -45,14 +34,7 @@ def _apply_bedrock_api_key(client) -> None:
 
     client.meta.events.register("before-send.bedrock-runtime", _inject_bearer)
 
-
 class BedrockRemediationClient:
-    """Calls AWS Bedrock (Claude) to analyze CI failures and produce fixes.
-
-    Uses the model-agnostic Converse API rather than ``invoke_model`` so swapping
-    ``BEDROCK_MODEL_ID`` to a different model family doesn't require touching the
-    request/response shape here.
-    """
 
     def __init__(self) -> None:
         self._client = boto3.client(
@@ -99,16 +81,6 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
         workflow_name: str,
         repo: str,
     ) -> dict:
-        """
-        Call Bedrock to analyze the workflow failure.
-
-        Returns:
-            A dict with keys: root_cause, fixed_yaml, pr_title, pr_description.
-
-        Raises:
-            Exception: If the model cannot be invoked after retries or the response
-                       cannot be parsed as valid JSON.
-        """
         prompt = self._build_prompt(workflow_yaml, logs, workflow_name, repo)
 
         max_retries = 2
@@ -167,24 +139,7 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
         logs: str = "",
         few_shot_context: str = "",
     ) -> str:
-        """Directly generate a corrected workflow YAML via the Converse API.
 
-        Used as a fallback when the yaml_fixer Bedrock Agent returns a capability
-        refusal instead of actual YAML (e.g. its system prompt restricts it from
-        writing files). This path calls the model directly — no agent, no tool use.
-
-        Args:
-            workflow_yaml: The original failing YAML content.
-            root_cause: Specific root cause string from analyse_root_cause.
-            failure_category: One of the 9 classifier categories (e.g. AUTH_FAILURE).
-            logs: Last N lines of failure logs for extra context.
-
-        Returns:
-            The corrected YAML as a string.
-        Raises:
-            RuntimeError: If the model refuses or returns unusable output.
-        """
-        # Per-category fix guidance — tells the model *what kind* of change to make
         _CATEGORY_HINTS = {
             "DEPENDENCY_VERSION": (
                 "The issue is an invalid/outdated dependency or language version. "
@@ -272,7 +227,7 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
 
                 )
                 raw: str = response["output"]["message"]["content"][0]["text"].strip()
-                # Strip any accidental markdown fences
+
                 if raw.startswith("```"):
                     lines = raw.splitlines()
                     raw = "\n".join(l for l in lines if not l.startswith("```")).strip()
@@ -292,16 +247,6 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
         malformed_yaml: str,
         error_message: str,
     ) -> str:
-        """Invokes Bedrock to fix syntax/parsing errors in a previously generated YAML fix.
-
-        Args:
-            original_yaml: The original failing workflow YAML.
-            malformed_yaml: The suggested YAML fix that failed to parse.
-            error_message: The YAMLError exception message from the parser.
-
-        Returns:
-            The corrected YAML string from the model.
-        """
         prompt = (
             "You are an expert GitHub Actions DevOps engineer. A YAML parser failed to parse a suggested YAML fix.\n\n"
             "ORIGINAL FAILING WORKFLOW:\n"
@@ -337,7 +282,7 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
 
                 )
                 raw: str = response["output"]["message"]["content"][0]["text"].strip()
-                # Strip any accidental markdown fences
+
                 if raw.startswith("```"):
                     lines = raw.splitlines()
                     raw = "\n".join(l for l in lines if not l.startswith("```")).strip()
@@ -352,10 +297,6 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
         raise RuntimeError("correct_yaml_syntax: Bedrock invocation failed after retries")
 
     def _invoke_json(self, prompt: str, required_keys: set[str], max_tokens: int = 2048) -> dict:
-        """Shared call+parse path for narrate_template_diff/judge_pattern_cluster
-        below -- same retry-on-throttle and markdown-fence-stripping behavior as
-        analyze_failure, factored out here rather than there to avoid touching
-        the older, heavily-exercised remediation path."""
         max_retries = 2
         last_exception: Exception | None = None
         for attempt in range(max_retries + 1):
@@ -388,13 +329,6 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
         raise RuntimeError("Bedrock invocation failed after retries") from last_exception
 
     def narrate_template_diff(self, diff: dict, workflow_file: str, template_name: str) -> str:
-        """FR-3, LLM layer: explain WHY a structural gap matters, not just WHAT
-        is missing -- template_diff.narrate_diff() already states the facts
-        deterministically (missing X, drift on Y); this adds judgment a set
-        comparison can't: is a missing component a real risk (e.g. no security
-        scan) or harmless (e.g. project-specific tooling the template never
-        anticipated). Only called for diffs that aren't fully compliant --
-        nothing to judge when there's no gap."""
         prompt = f"""You are reviewing a GitHub Actions workflow's adherence to your organization's approved CI template.
 
 Workflow: {workflow_file}
@@ -409,19 +343,6 @@ In 2-3 sentences, explain in plain English what this gap likely means in practic
         return result["narrative"]
 
     def judge_pattern_cluster(self, candidate_jobs: list[dict], min_occurrences: int) -> dict | None:
-        """FR-4, LLM layer: pattern_frequency.find_repeated_patterns only
-        clusters jobs with byte-identical component signatures, so two jobs
-        doing the same thing with one extra or reordered step never cluster.
-        Given a group of jobs whose signatures are similar-but-not-identical
-        (see pattern_frequency.find_near_miss_groups), ask whether they're
-        genuinely the same reusable pattern and, if so, draft the actual
-        reusable-workflow YAML for it -- the thing an exact-hash cluster only
-        ever reports as "these N files share this signature," never drafts.
-
-        candidate_jobs: [{"job_key": "path::job_id", "components": [...]}, ...]
-        Returns None if the model judges these aren't a real match, rather
-        than forcing a verdict onto jobs that only superficially overlap.
-        """
         jobs_desc = "\n".join(
             f"- {j['job_key']}: uses {', '.join(j['components'])}" for j in candidate_jobs
         )

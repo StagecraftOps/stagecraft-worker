@@ -11,7 +11,6 @@ from app.agents.nodes import (
     write_pr_description,
 )
 
-
 def _handle_blocked(state: AgentState) -> AgentState:
     trace = state.get("agent_trace", [])
     trace.append("BLOCKED: security risk too high — fix not stored")
@@ -26,7 +25,6 @@ def _handle_blocked(state: AgentState) -> AgentState:
         ),
         "agent_trace": trace,
     }
-
 
 def build_graph() -> StateGraph:
     graph = StateGraph(AgentState)
@@ -48,12 +46,11 @@ def build_graph() -> StateGraph:
         should_block_high_risk,
         {"block": "blocked", "approve": "pr_writer"},
     )
-    # confidence scorer runs after PR writer (or after blocked) before END
+
     graph.add_edge("pr_writer", "confidence")
     graph.add_edge("confidence", END)
     graph.add_edge("blocked", END)
 
     return graph.compile()
-
 
 remediation_graph = build_graph()

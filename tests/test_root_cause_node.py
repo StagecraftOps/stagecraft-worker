@@ -1,10 +1,8 @@
-"""Regression tests for the optional MCP root-cause enrichment path."""
 import os
 from unittest.mock import patch
 
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("SECRET_KEY", "test-secret-only")
-
 
 def _state() -> dict:
     return {
@@ -18,7 +16,6 @@ def _state() -> dict:
         "failure_category": "DEPENDENCY_VERSION",
         "agent_trace": [],
     }
-
 
 def test_root_cause_uses_direct_converse_when_mcp_is_disabled():
     from app.agents import nodes
@@ -36,7 +33,6 @@ def test_root_cause_uses_direct_converse_when_mcp_is_disabled():
     assert result["root_cause_severity"] == "low"
     converse.assert_called_once()
     with_tools.assert_not_called()
-
 
 def test_mcp_tool_schemas_match_github_mcp_server():
     from app.agents.nodes import _ROOT_CAUSE_TOOLCONFIG

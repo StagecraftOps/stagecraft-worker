@@ -1,21 +1,3 @@
-"""Investigator Agent — answers "why"/comparative questions for Pipeline Chat.
-
-Distinct from the remediation LangGraph (graph.py): that pipeline runs once
-per failed workflow run, fully automated, and writes to a single
-remediations row. This agent runs synchronously, once per chat message,
-triggered on demand when a question needs reasoning across MULTIPLE past
-runs rather than a single nearest-neighbor retrieval. It is read-only and
-never reaches GitHub write tools.
-
-Tool surface (all served by stagecraft-mcp over the same in-cluster SSE
-connection the remediation pipeline already uses):
-  - search_remediations: query remediation history (semantic or filtered)
-  - get_workflow_yaml / get_run_logs: pull a SPECIFIC run's raw data if the
-    retrieved summary isn't enough to answer
-
-Bounded at _MAX_TOOL_ROUNDS iterations so one chat message can't run away in
-cost or latency.
-"""
 import asyncio
 import logging
 import re
@@ -148,7 +130,6 @@ UNKNOWN as if it were an answer.
 Respond with ONLY your final answer in plain prose. Do not include any visible reasoning, \
 <thinking> tags, or scratchpad text — think privately and output just the conclusion."""
 
-
 def _bedrock_client():
     client = boto3.client(
         "bedrock-runtime",
@@ -158,25 +139,12 @@ def _bedrock_client():
     _apply_bedrock_api_key(client)
     return client
 
-
 _THINKING_BLOCK = re.compile(r"<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE)
 
-
 def _strip_thinking(text: str) -> str:
-    """Drop any <thinking>...</thinking> scratchpad the model emits despite
-    being told not to — prompting alone isn't reliable enough to skip this."""
     return _THINKING_BLOCK.sub("", text).strip()
 
-
 def investigate(question: str, history: list[dict] | None = None) -> dict:
-    """Run the bounded tool-calling loop and return the final answer + trace.
-
-    `history` is a list of {"role": "user"|"assistant", "content": str} dicts
-    from prior turns in the same conversation. They are prepended to the
-    Bedrock messages so the model has context across questions.
-
-    Returns {"answer": str, "tool_calls": list[dict]}.
-    """
     client = _bedrock_client()
 
     prior: list[dict] = []
@@ -186,8 +154,6 @@ def investigate(question: str, history: list[dict] | None = None) -> dict:
             "content": [{"text": turn["content"]}],
         })
 
-    # Bedrock requires conversations to start with a user message.
-    # History truncation can leave a leading assistant turn — drop it.
     while prior and prior[0]["role"] != "user":
         prior.pop(0)
 

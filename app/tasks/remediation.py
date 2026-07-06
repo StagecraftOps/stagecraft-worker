@@ -1,15 +1,3 @@
-"""Celery tasks for the remediation pipeline.
-
-Architecture (suggestion-engine model):
-  1. Worker is READ-ONLY with respect to GitHub — no branch creation, no
-     commits, no PRs. Write-scope GitHub operations are user-triggered via
-     the api-service POST /api/v1/remediations/{id}/raise-pr endpoint.
-  2. This eliminates the prompt-injection blast radius: even if Bedrock is
-     manipulated via log content, the worst outcome is a bad YAML suggestion
-     the user can reject — not an auto-committed backdoor.
-  3. After analysis, status becomes 'analyzed' and suggested_yaml is populated.
-     The user reviews in the dashboard and clicks "Raise PR" to create the PR.
-"""
 import asyncio
 import json
 import logging
@@ -45,14 +33,7 @@ SyncSessionLocal = sessionmaker(bind=_sync_engine, autocommit=False, autoflush=F
 
 REDIS_EVENTS_CHANNEL = "stagecraft:events"
 
-
 def _compress_logs(text: str, max_lines: int = 200) -> str:
-    """Deduplicate consecutive repeated lines and cap total lines.
-
-    Repeated stack-trace or progress lines are the main source of token bloat
-    in CI logs. Collapsing runs of identical lines cuts 40-60% in typical
-    failure output without losing any unique signal.
-    """
     lines = text.splitlines()
     deduped: list[str] = []
     prev = None
@@ -73,7 +54,6 @@ def _compress_logs(text: str, max_lines: int = 200) -> str:
         deduped = deduped[:kept] + [f"  ... ({len(deduped) - max_lines} lines omitted) ..."] + deduped[-kept:]
     return "\n".join(deduped)
 
-
 def _strip_code_fences(text: str) -> str:
     value = (text or "").strip()
     if value.startswith("```"):
@@ -82,12 +62,11 @@ def _strip_code_fences(text: str) -> str:
         ).strip()
     return value
 
-
 def _normalize_suggested_yaml(original: str, candidate: str | None) -> tuple[bool, str]:
     normalized = _strip_code_fences(candidate or "")
     if not normalized:
         return False, "empty output"
-    # Post-process to fix common formatting anomalies where colons lack trailing space
+
     import re
     lines = []
     spacing_pattern = re.compile(r"^([ \t]*[a-zA-Z0-9_-]+):(?!\s)(.+)$")
@@ -109,7 +88,6 @@ def _normalize_suggested_yaml(original: str, candidate: str | None) -> tuple[boo
         return False, "no change from original"
     return True, normalized
 
-
 def _recover_suggested_yaml(
     workflow_yaml: str,
     root_cause: str,
@@ -118,7 +96,6 @@ def _recover_suggested_yaml(
     workflow_name: str,
     repo_full_name: str,
 ) -> str | None:
-    """Try stricter non-agent fallbacks when the multi-agent pipeline finds no valid fix."""
     bedrock = BedrockRemediationClient()
 
     candidate = bedrock.generate_yaml_fix(
@@ -144,21 +121,11 @@ def _recover_suggested_yaml(
     logger.warning("Single-agent Bedrock fallback produced an invalid fix (%s)", normalized)
     return None
 
-
 def _heuristic_yaml_fix(
     workflow_yaml: str,
     root_cause: str,
     failure_category: str | None,
 ) -> str | None:
-    """Deterministic last-resort fix for very common version-mismatch failures.
-
-    This is intentionally narrow: we only auto-edit when the worker has a clear
-    dependency-version signal and a known bad version token to replace.
-
-    NOTE: We intentionally do NOT gate on failure_category because Bedrock
-    occasionally misclassifies python-version failures as UNKNOWN rather than
-    DEPENDENCY_VERSION. Root-cause text is a more reliable signal.
-    """
     root_lower = (root_cause or "").lower()
     if "python" not in root_lower and "version" not in root_lower:
         return None
@@ -203,9 +170,7 @@ def _make_redis_sync():
         pool = ConnectionPool.from_url(clean_url)
     return redis_sync.Redis(connection_pool=pool)
 
-
 def _publish_event(event_type: str, data: dict) -> None:
-    """Fire-and-forget Redis publish so WebSocket clients get live updates."""
     try:
         r = _make_redis_sync()
         r.publish(REDIS_EVENTS_CHANNEL, json.dumps({"type": event_type, "data": data}))
@@ -213,19 +178,7 @@ def _publish_event(event_type: str, data: dict) -> None:
     except Exception as exc:
         logger.warning("Failed to publish %s event to Redis: %s", event_type, exc)
 
-
 def enqueue_knowledge_graph_rebuild(org_login: str) -> None:
-    """Keep the knowledge graph's Failure/GovernanceRule/RuntimeMetric nodes
-    from going stale between manual Rebuilds. Called from remediation.py,
-    governance.py, and optimization.py whenever they write a row the
-    knowledge graph would care about (a classified failure, a new finding, a
-    new recommendation) -- each caller gates on its own "did this actually
-    add anything new" condition before calling, since build_knowledge_graph
-    re-scans the whole org unconditionally and a call with nothing new to
-    find is a wasted rebuild. Best-effort: never fail the caller's task over
-    this -- a queueing hiccup here just means the graph is stale until the
-    next natural rebuild (e.g. the next dependency-graph build's auto-chain).
-    """
     try:
         from app.tasks.knowledge_graph import build_knowledge_graph_task
         build_knowledge_graph_task.delay({"org_login": org_login})
@@ -233,7 +186,7 @@ def enqueue_knowledge_graph_rebuild(org_login: str) -> None:
         logger.warning("Failed to enqueue knowledge-graph rebuild for %s: %s", org_login, exc)
 
 def _get_github_token_for_org(session: Session, org_login: str) -> str:
-    # Prefer GitHub App installation token — scoped to the org, no user token needed.
+
     if github_app_configured():
         row = session.execute(
             text("SELECT installation_id FROM organizations WHERE login = :login LIMIT 1"),
@@ -241,23 +194,12 @@ def _get_github_token_for_org(session: Session, org_login: str) -> str:
         ).fetchone()
         installation_id = row[0] if row else None
 
-        # No organizations row yet (e.g. the App was installed but nobody has
-        # logged in via OAuth to own an org record) — resolve the installation
-        # straight from GitHub so we can still mint a token.
-        #
-        # asyncio.run (not get_event_loop().run_until_complete): these run in a
-        # sync Celery worker process with no event loop of its own. On Python
-        # 3.12 get_event_loop() raises "no current event loop in thread" when
-        # none is set, which made every token-minting task (dependency graph,
-        # job timing, remediation) fail on first attempt and only pass on a
-        # lucky retry. asyncio.run creates and tears down its own loop reliably.
         if not installation_id:
             installation_id = asyncio.run(get_installation_id_for_org(org_login))
 
         if installation_id:
             return asyncio.run(get_installation_token(installation_id))
 
-    # Fall back to the org owner's OAuth token (pre-App path).
     row = session.execute(
         text(
             """
@@ -287,8 +229,6 @@ def _get_github_token_for_org(session: Session, org_login: str) -> str:
     raise RuntimeError(f"No GitHub token available for org '{org_login}'")
 
 def _get_owner_email_for_org(session: Session, org_login: str) -> str | None:
-    """Email of the org's owner (User.email — null if their GitHub email is
-    private and they authorized before the user:email scope was added)."""
     row = session.execute(
         text(
             """
@@ -312,7 +252,6 @@ def _parse_timestamp(value: str | None) -> datetime | None:
         return None
 
 def _upsert_workflow_run(session: Session, message: dict) -> uuid.UUID:
-    """Insert or update a WorkflowRun row, returning its UUID."""
     run_id = message["run_id"]
     status_value = message.get("status") or "queued"
     conclusion = message.get("conclusion")
@@ -393,7 +332,6 @@ def _create_remediation_record(
     message: dict,
     status: str,
 ) -> uuid.UUID:
-    """Insert a Remediation row with the given status and return its UUID."""
     remediation_id = uuid.uuid4()
     now = datetime.now(timezone.utc)
     session.execute(
@@ -441,7 +379,6 @@ def _update_remediation(
     pr_description: str | None = None,
     agent_trace: list[str] | None = None,
 ) -> None:
-    """Update an existing Remediation row."""
     session.execute(
         text(
             """
@@ -492,14 +429,6 @@ def _ingest_embedding(
     suggested_yaml: str | None,
     logs_excerpt: str = "",
 ) -> None:
-    """Write a remediation doc to the Bedrock Knowledge Base S3 source bucket.
-
-    Bedrock ingests from S3 automatically (sync is triggered on a schedule or
-    manually). Falls back to the legacy pgvector path when BEDROCK_KB_S3_BUCKET
-    is not set, so local dev / pre-apply environments continue to work.
-
-    Best-effort: failures must never break the remediation flow.
-    """
     chunk = (
         f"Repository: {org_login}/{repo_name}\n"
         f"Workflow: {workflow_file}\n"
@@ -521,13 +450,11 @@ def _ingest_embedding(
         )
         logger.debug("KB doc written to s3://%s/%s", settings.BEDROCK_KB_S3_BUCKET, key)
 
-        # Kick off a Bedrock KB ingestion job so the new doc is queryable
-        # immediately rather than waiting for the next scheduled sync.
         if settings.BEDROCK_KB_ID:
             try:
                 import uuid as _uuid
                 bedrock_agent = boto3.client("bedrock-agent", region_name=settings.AWS_REGION)
-                # Get the data source ID for this KB
+
                 ds_resp = bedrock_agent.list_data_sources(knowledgeBaseId=settings.BEDROCK_KB_ID)
                 ds_id = ds_resp["dataSourceSummaries"][0]["dataSourceId"]
                 bedrock_agent.start_ingestion_job(
@@ -540,7 +467,6 @@ def _ingest_embedding(
                 logger.warning("KB ingestion job failed to start (non-fatal): %s", exc)
         return
 
-    # Legacy pgvector path (used when KB is not configured).
     from app.services.embeddings import embed_text, to_pgvector
 
     embedding = embed_text(chunk)
@@ -578,12 +504,6 @@ def _ingest_embedding(
     session.commit()
 
 def _trigger_job_timing_sync(workflow_run_id: uuid.UUID, message: dict) -> None:
-    """Fire-and-forget FR-2 job-timing sync once a run completes.
-
-    Lazy-imported to avoid a circular import (job_timing.py imports
-    SyncSessionLocal/_get_github_token_for_org from this module). Never
-    allowed to affect the caller's own success/failure.
-    """
     try:
         from app.tasks.job_timing import sync_job_timings_task
 
@@ -598,10 +518,8 @@ def _trigger_job_timing_sync(workflow_run_id: uuid.UUID, message: dict) -> None:
     except Exception as exc:
         logger.warning("Failed to enqueue job-timing sync for run %s: %s", message.get("run_id"), exc)
 
-
 @app.task(bind=True, max_retries=3, default_retry_delay=30)
 def upsert_workflow_run_task(self, message: dict) -> dict:
-    """Persist/update a workflow_run row for non-failure events."""
     session = SyncSessionLocal()
     try:
         run_uuid = _upsert_workflow_run(session, message)
@@ -624,15 +542,6 @@ def upsert_workflow_run_task(self, message: dict) -> dict:
 
 @app.task(bind=True, max_retries=3, default_retry_delay=60)
 def process_failed_workflow(self, message: dict) -> dict:
-    """
-    Analyze a failed workflow run with Bedrock and store a suggested fix.
-
-    This task is READ-ONLY with respect to GitHub. It fetches the workflow
-    YAML and logs, sends them to Bedrock for analysis, then stores the
-    suggested_yaml and root_cause in the remediation record. No branches,
-    commits, or PRs are created — those happen only when the user clicks
-    "Raise PR" in the dashboard (POST /api/v1/remediations/{id}/raise-pr).
-    """
     repo_owner: str = message["repo_owner"]
     repo_name: str = message["repo_name"]
     run_id: int = message["run_id"]
@@ -680,9 +589,6 @@ def process_failed_workflow(self, message: dict) -> dict:
             logger.info("Running multi-agent LangGraph pipeline for run %s", run_id)
             from app.agents.graph import remediation_graph
 
-            # Pull accepted fixes for the same org+repo from fix_memories as few-shot examples.
-            # Classify first so we can filter by category after the graph runs classify_failure;
-            # here we fetch by repo as a broad fallback — the node will filter by category.
             fix_examples: list[str] = []
             try:
                 rows = session.execute(
@@ -824,8 +730,6 @@ def process_failed_workflow(self, message: dict) -> dict:
         if failure_category:
             enqueue_knowledge_graph_rebuild(repo_owner)
 
-        # Index this remediation for semantic (RAG) search in Pipeline Chat.
-        # Best-effort — never fail the analysis if embedding/Bedrock hiccups.
         try:
             _ingest_embedding(
                 session, remediation_id, repo_owner, repo_name, workflow_file,
@@ -834,8 +738,6 @@ def process_failed_workflow(self, message: dict) -> dict:
         except Exception as embed_exc:
             logger.warning("Embedding ingestion failed for remediation %s: %s", remediation_id, embed_exc)
 
-        # Notify the org owner a fix is ready to review. Best-effort — never
-        # fail the analysis over SES being unconfigured/throttled/etc.
         try:
             owner_email = _get_owner_email_for_org(session, repo_owner)
             if owner_email:
@@ -878,12 +780,6 @@ def process_failed_workflow(self, message: dict) -> dict:
 
 @app.task(bind=True, max_retries=1, default_retry_delay=60)
 def backfill_embeddings_task(self, limit: int = 500) -> dict:
-    """Embed existing analyzed remediations into log_embeddings for RAG.
-
-    One-shot catch-up for remediations created before embedding-on-analysis
-    existed (or after the log_embeddings table is first created). Logs aren't
-    persisted on the remediation row, so backfill embeds root_cause + fix only.
-    """
     session = SyncSessionLocal()
     embedded = 0
     try:
@@ -932,7 +828,6 @@ def _set_org_sync_status(session: Session, org_login: str, status_value: str) ->
 
 @app.task(bind=True, max_retries=2, default_retry_delay=120)
 def backfill_org_runs_task(self, org_login: str) -> dict:
-    """One-shot historical sync for a newly connected org."""
     session = SyncSessionLocal()
     github: GitHubRemediationClient | None = None
     synced = 0
@@ -1009,14 +904,8 @@ def backfill_org_runs_task(self, org_login: str) -> dict:
         if github:
             github.close()
 
-
 @app.task(bind=True, max_retries=3, default_retry_delay=10)
 def register_app_installation_task(self, message: dict) -> dict:
-    """Handle GitHub App installation events from SQS.
-
-    'created' → upsert org with installation_id, then kick off backfill.
-    'deleted' → remove org row (App was uninstalled).
-    """
     import uuid as _uuid
 
     action = message.get("action")

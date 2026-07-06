@@ -1,34 +1,16 @@
-"""FR-4: detects step/component patterns repeated across many workflows in
-an org — candidates worth extracting into a shared reusable template
-component. find_repeated_patterns below is pure computation (signature
-hashing + counting), no AI. find_near_miss_groups is also pure computation
-(similarity grouping) -- the LLM judgment itself lives in
-BedrockRemediationClient.judge_pattern_cluster, called from
-app.tasks.standardization on the groups this returns.
-"""
 import hashlib
 import re
 
 import yaml
 
 _VERSION_SPLIT = re.compile(r"^(.*)@([^@]+)$")
-_MIN_COMPONENTS_FOR_SIGNAL = 2  # ignore trivial 0-1 component jobs — too noisy to be a "pattern"
-
+_MIN_COMPONENTS_FOR_SIGNAL = 2
 
 def _strip_version(uses: str) -> str:
     match = _VERSION_SPLIT.match(uses)
     return match.group(1) if match else uses
 
-
 def _job_signatures(path: str, content: str) -> list[tuple[str, tuple[str, ...]]]:
-    """Return [(f"{path}::{job_id}", sorted_component_names), ...] for one workflow file.
-
-    A job-level `uses:` (the entire job delegates to one reusable workflow) is
-    always significant on its own — that's precisely the "reusable template
-    component" signal FR-4 looks for, not noise. Step-level-only signatures
-    (ordinary marketplace actions like actions/checkout) require >= 2 distinct
-    components to avoid flagging a single ubiquitous action as a "pattern".
-    """
     try:
         doc = yaml.safe_load(content)
     except yaml.YAMLError:
@@ -60,15 +42,9 @@ def _job_signatures(path: str, content: str) -> list[tuple[str, tuple[str, ...]]
 
     return signatures
 
-
 def find_repeated_patterns(
     workflow_contents: dict[str, str], min_occurrences: int = 3
 ) -> list[dict]:
-    """workflow_contents: {workflow_file_path: yaml_content}.
-
-    Returns pattern-cluster dicts for any component signature that recurs in
-    at least `min_occurrences` distinct workflow files.
-    """
     signature_to_files: dict[tuple[str, ...], set[str]] = {}
 
     for path, content in workflow_contents.items():
@@ -90,13 +66,11 @@ def find_repeated_patterns(
     clusters.sort(key=lambda c: c["occurrence_count"], reverse=True)
     return clusters
 
-
 def _jaccard(a: tuple[str, ...], b: tuple[str, ...]) -> float:
     sa, sb = set(a), set(b)
     if not sa or not sb:
         return 0.0
     return len(sa & sb) / len(sa | sb)
-
 
 def find_near_miss_groups(
     workflow_contents: dict[str, str],
@@ -104,25 +78,13 @@ def find_near_miss_groups(
     min_occurrences: int = 3,
     similarity_threshold: float = 0.6,
 ) -> list[list[dict]]:
-    """Group jobs whose signatures are similar-but-not-identical -- missed by
-    find_repeated_patterns' exact-hash matching -- into candidate groups for
-    LLM judgment (BedrockRemediationClient.judge_pattern_cluster).
-
-    Only jobs NOT already part of an exact cluster are considered (no point
-    asking the LLM to confirm what exact hashing already proved). Grouping is
-    greedy single-linkage: a job joins the first existing group any of whose
-    members it's similar enough to, which is intentionally simple rather than
-    a proper clustering algorithm -- at this scale (a few hundred jobs per
-    analysis run) the O(n^2) pairwise comparison this implies is cheap, and
-    the LLM call downstream is the actual judgment step, not this grouping.
-    """
     exact_signatures = {tuple(c["pattern_signature"]["components"]) for c in exact_clusters}
 
     candidate_jobs: list[tuple[str, tuple[str, ...]]] = []
     for path, content in workflow_contents.items():
         for job_key, signature in _job_signatures(path, content):
             if signature in exact_signatures:
-                continue  # already exactly clustered -- not a "near miss"
+                continue
             candidate_jobs.append((job_key, signature))
 
     groups: list[list[tuple[str, tuple[str, ...]]]] = []

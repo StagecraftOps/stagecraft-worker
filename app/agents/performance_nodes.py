@@ -1,14 +1,3 @@
-"""Performance Optimization Agent nodes.
-
-The deterministic inputs (bottlenecks, parallelization_candidates) are
-computed by app/analysis/bottleneck_detector.py and
-app/analysis/parallelization_advisor.py *before* this graph is invoked —
-this agent's job is to turn those facts into prioritized, explained
-recommendations (propose_optimizations, draft_future_yaml), then hand the
-proposed structural change back to the same deterministic critical-path
-math for the "what happens" simulation (simulate_savings) — the AI proposes,
-the math is reused as-is, per FR-9.
-"""
 import json
 
 from app.agents.compliance_nodes import _parse_json_list
@@ -16,7 +5,6 @@ from app.agents.nodes import _converse
 from app.agents.performance_state import PerformanceState
 from app.analysis.critical_path import compute_critical_path
 from app.analysis.workflow_parser import parse_workflow
-
 
 def propose_optimizations(state: PerformanceState) -> PerformanceState:
     bottlenecks = state.get("bottlenecks", [])
@@ -43,7 +31,6 @@ def propose_optimizations(state: PerformanceState) -> PerformanceState:
     trace.append(f"propose_optimizations: {len(recommendations)} recommendation(s)")
     return {**state, "recommendations": recommendations, "agent_trace": trace}
 
-
 def draft_future_yaml(state: PerformanceState) -> PerformanceState:
     recommendations = state.get("recommendations", [])
     if not recommendations:
@@ -69,10 +56,7 @@ def draft_future_yaml(state: PerformanceState) -> PerformanceState:
     trace.append("draft_future_yaml: drafted future-state YAML")
     return {**state, "draft_future_yaml": draft, "agent_trace": trace}
 
-
 def simulate_savings(state: PerformanceState) -> PerformanceState:
-    """Pure recomputation — no AI. Re-runs the same deterministic critical-path
-    function against the proposed structure to measure the actual impact."""
     job_durations = state.get("job_durations", {})
     needs_edges = [tuple(edge) for edge in state.get("needs_edges", [])]
 

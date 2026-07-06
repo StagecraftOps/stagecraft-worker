@@ -1,9 +1,5 @@
 from celery import Celery
 
-# Every task module must be listed here so the Celery worker process registers
-# them — the worker entrypoint (app/main.py) only imports remediation directly,
-# so without this the others (e.g. job_timing) raise KeyError when a task tries
-# to .delay() them. (The SQS consumer imports them separately, in its own process.)
 app = Celery(
     "remediation-worker",
     include=[

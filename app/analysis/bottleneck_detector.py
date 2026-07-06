@@ -1,10 +1,3 @@
-"""FR-7: statistical outlier detection on critical-path job durations.
-
-Pure computation, no AI — flags a job as a bottleneck when it's on the
-critical path AND its duration is a statistical outlier (p90+) compared to
-the same-named job's historical durations across the org.
-"""
-
 
 def _percentile(values: list[int], pct: float) -> float:
     if not values:
@@ -16,21 +9,12 @@ def _percentile(values: list[int], pct: float) -> float:
     fraction = index - lower
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
-
 def detect_bottlenecks(
     current_jobs: list[dict],
     historical_durations_by_name: dict[str, list[int]],
     critical_path_job_names: list[str],
     percentile: float = 0.9,
 ) -> list[dict]:
-    """
-    current_jobs: [{"job_name": str, "duration_seconds": int}, ...] for one run
-    historical_durations_by_name: {job_name: [duration_seconds, ...]} across the org
-    critical_path_job_names: job names on this run's critical path
-
-    Returns bottleneck findings for jobs that are both on the critical path
-    and a p90+ outlier relative to their own historical distribution.
-    """
     critical_set = set(critical_path_job_names)
     findings = []
 
@@ -42,7 +26,7 @@ def detect_bottlenecks(
 
         history = historical_durations_by_name.get(name, [])
         if len(history) < 3:
-            continue  # not enough history to call this an outlier, not noise
+            continue
 
         baseline_p90 = _percentile(history, percentile)
         if duration > baseline_p90:

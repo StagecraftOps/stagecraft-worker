@@ -1,16 +1,3 @@
-"""
-SQS -> Celery bridge.
-
-webhook-service and api-service publish raw JSON messages directly to SQS via
-boto3 (see their SQSPublisher classes) — they do not speak Celery's wire
-protocol. Celery's broker here is Redis (see core/celery_config.py), not SQS.
-This process is the missing link: it long-polls the SQS queue, parses each
-message, and dispatches it to the appropriate Celery task via .delay(), which
-enqueues onto Redis for the `celery worker` process to pick up.
-
-Runs as its own process/container — separate from the Celery worker — so it
-can scale independently (it's I/O-bound polling, not CPU/LLM-bound work).
-"""
 import json
 import logging
 import time
@@ -91,7 +78,6 @@ def _dispatch(message: dict) -> None:
     logger.warning("Unknown event_type in SQS message, dropping: %r", event_type)
 
 def run() -> None:
-    """Long-poll the SQS queue forever, dispatching each message to Celery."""
     start_health_server(port=8080)
 
     client = boto3.client("sqs", region_name=settings.AWS_REGION)

@@ -1,4 +1,3 @@
-"""Celery task: build/refresh the org-wide knowledge graph (FR-11)."""
 import logging
 
 from app.analysis.knowledge_graph_builder import build_knowledge_graph
@@ -6,7 +5,6 @@ from app.core.celery_app import app
 from app.tasks.remediation import SyncSessionLocal
 
 logger = logging.getLogger(__name__)
-
 
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def build_knowledge_graph_task(self, message: dict) -> dict:

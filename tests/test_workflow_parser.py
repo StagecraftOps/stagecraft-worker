@@ -1,6 +1,4 @@
-"""Tests for app/analysis/workflow_parser.py — pure YAML parsing, no DB/network."""
 from app.analysis.workflow_parser import parse_workflow
-
 
 def test_job_needs_edge():
     content = """
@@ -24,7 +22,6 @@ jobs:
     assert len(needs_edges) == 1
     assert needs_edges[0]["source_key"] == "job::.github/workflows/ci.yml::lint"
     assert needs_edges[0]["target_key"] == "job::.github/workflows/ci.yml::test"
-
 
 def test_local_reusable_workflow_call_bridges_to_workflow_node():
     content = """
@@ -55,7 +52,6 @@ jobs:
     assert fanout_edges[0]["target_key"] == "workflow::.github/workflows/service-ci.yml"
     assert fanout_edges[0]["metadata"]["matrix"] == {"service": ["a", "b"]}
 
-
 def test_external_reusable_workflow_ref_keeps_placeholder_type():
     content = """
 name: Notify
@@ -70,7 +66,6 @@ jobs:
     assert ext[0]["external_key"] == "reusable_workflow::some-org/shared-workflows/.github/workflows/notify.yml@v2"
     assert ext[0]["workflow_file"] is None
     assert ext[0]["metadata"] is None
-
 
 def test_composite_action_local_uses_edge():
     content = """
@@ -92,14 +87,12 @@ jobs:
     assert len(composite_nodes) == 1
     assert composite_nodes[0]["display_name"] == "./.github/actions/node-ci"
 
-    # Marketplace action (actions/checkout@v4) must NOT be graphed as a node.
     assert all(n["display_name"] != "actions/checkout@v4" for n in nodes)
 
     composite_edges = [e for e in edges if e["edge_type"] == "uses_composite"]
     assert len(composite_edges) == 1
-    # Gated by a runtime-only `if:` — unresolved at parse time, so ambiguous.
-    assert composite_edges[0]["confidence"] == "ambiguous"
 
+    assert composite_edges[0]["confidence"] == "ambiguous"
 
 def test_needs_output_data_dependency():
     content = """
@@ -123,12 +116,10 @@ jobs:
     assert output_edges[0]["source_key"] == "job::.github/workflows/ci.yml::build"
     assert output_edges[0]["target_key"] == "job::.github/workflows/ci.yml::deploy"
 
-
 def test_unparsable_yaml_returns_empty():
     nodes, edges = parse_workflow("bad.yml", "not: valid: yaml: [")
     assert nodes == []
     assert edges == []
-
 
 def test_non_workflow_yaml_without_jobs_returns_empty():
     nodes, edges = parse_workflow("random.yml", "just_a_key: value\n")

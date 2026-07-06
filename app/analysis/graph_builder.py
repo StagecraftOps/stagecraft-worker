@@ -1,12 +1,3 @@
-"""Builds a full dependency graph for a repo from its GitHub Actions workflows.
-
-Orchestrates workflow_parser, orchestrator_parser, dispatch_detector, and
-composite_action_resolver across every workflow file in the repo, resolves
-workflow_run trigger edges (matched by workflow `name:`, not filename), and
-persists the result via raw SQL against the graphs/graph_nodes/graph_edges
-tables — the same sync-SQLAlchemy-with-text() pattern app/tasks/remediation.py
-already uses, since this worker has no ORM models of its own.
-"""
 import json
 import logging
 import uuid
@@ -26,24 +17,8 @@ from app.services.neo4j_client import get_driver
 
 logger = logging.getLogger(__name__)
 
-# node_type values repo-scoped identity (two repos in the same org can
-# collide on the same external_key); everything else here is org-wide —
-# see the module docstring on _write_dependency_subgraph below.
-#
-# reusable_workflow is org-wide, not repo-scoped: after the bridging fix in
-# workflow_parser._resolve_reusable_workflow_ref, this node_type only ever
-# represents an EXTERNAL/marketplace reference (owner/repo/path@ref) — local
-# `./...` refs resolve to the real `workflow` node instead. An external ref
-# names the exact same remote file+ref no matter which repo in the org calls
-# it, so repo-scoping it would give two repos calling the same shared
-# template two disconnected nodes instead of one shared one.
 _REPO_SCOPED_TYPES = {"workflow", "job", "composite_action"}
 
-# Org-wide node types with no repo_name of their own (service/external_repo)
-# still need to be resolvable from "this repo's dependency graph" even when
-# they have zero edges (see declared_by_repos handling in
-# _write_dependency_subgraph_tx and the read-path query in stagecraft-api's
-# dependency_graph.py).
 _ORG_WIDE_DECLARABLE_TYPES = {"service", "external_repo"}
 
 _NODE_LABELS = {
@@ -66,11 +41,9 @@ _REL_TYPES = {
     "workflow_run_trigger": "WORKFLOW_RUN_TRIGGER",
 }
 
-
 def _identity_key(org_login: str, node_type: str, external_key: str, repo_name: str) -> str:
     scope = repo_name if node_type in _REPO_SCOPED_TYPES else ""
     return f"{org_login}::{scope}::{external_key}"
-
 
 def _list_workflow_files(tree: list[dict]) -> list[str]:
     return [
@@ -81,13 +54,11 @@ def _list_workflow_files(tree: list[dict]) -> list[str]:
         and entry["path"].endswith((".yml", ".yaml"))
     ]
 
-
 def _find_repo_file(tree: list[dict], name: str) -> str | None:
     for entry in tree:
         if entry.get("type") == "blob" and entry.get("path") == name:
             return name
     return None
-
 
 def _workflow_display_name(content: str, fallback: str) -> str:
     try:
@@ -98,9 +69,7 @@ def _workflow_display_name(content: str, fallback: str) -> str:
         return doc["name"]
     return fallback
 
-
 def _workflow_run_trigger_names(content: str) -> list[str]:
-    """Return the `on.workflow_run.workflows: [...]` list, if present."""
     try:
         doc = yaml.safe_load(content)
     except yaml.YAMLError:
@@ -120,14 +89,9 @@ def _workflow_run_trigger_names(content: str) -> list[str]:
         return [n for n in names if isinstance(n, str)]
     return []
 
-
 def build_graph_data(
     github: GitHubRemediationClient, owner: str, repo: str, ref: str
 ) -> tuple[list[dict], list[dict]]:
-    """Fetch and parse everything needed to build one repo's dependency graph.
-
-    Returns (nodes, edges) with nodes deduped by external_key.
-    """
     tree = github.get_repo_tree(owner, repo, ref)
     tree_paths = {e["path"] for e in tree if e.get("type") == "blob"}
 
@@ -153,9 +117,6 @@ def build_graph_data(
         all_nodes.extend(dispatch_nodes)
         all_edges.extend(dispatch_edges)
 
-    # workflow_run triggers are matched by exact workflow `name:` string, not
-    # filename — invisible to any path-based parser, so this needs its own pass
-    # once every workflow's name is known.
     for path, content in file_contents.items():
         for trigger_name in _workflow_run_trigger_names(content):
             source_file = name_to_file.get(trigger_name)
@@ -168,7 +129,6 @@ def build_graph_data(
                     "metadata": {"matched_by": "name", "workflow_name": trigger_name},
                 })
 
-    # orchestrator.yaml: a separate, non-GHA service-level dependency DAG.
     orchestrator_path = _find_repo_file(tree, "orchestrator.yaml")
     if orchestrator_path:
         content = github.get_file_content(owner, repo, orchestrator_path, ref)
@@ -177,8 +137,6 @@ def build_graph_data(
             all_nodes.extend(nodes)
             all_edges.extend(edges)
 
-    # service-config.json: resolves ambiguous composite-action edges left by
-    # workflow_parser (runtime picked at CI-runtime via an `if:` condition).
     service_config: dict = {}
     config_path = _find_repo_file(tree, "service-config.json")
     if config_path:
@@ -199,14 +157,6 @@ def build_graph_data(
             edge["confidence"] = confidence
             edge["metadata"] = {**(edge.get("metadata") or {}), "resolved_runtime": runtime}
 
-    # Dedupe nodes by external_key. A local `uses:` reusable-workflow
-    # reference (_resolve_reusable_workflow_ref) is given the SAME
-    # external_key as the real `workflow` node for that file, so the thin
-    # call-site placeholder and the authoritative node collide here on
-    # purpose — whichever one is NOT flagged placeholder_reusable_ref wins,
-    # regardless of which one this loop reaches first (file processing
-    # order is filesystem/tree order, not call-graph order, so first-wins
-    # alone would be nondeterministic).
     deduped: dict[str, dict] = {}
     for node in all_nodes:
         key = node["external_key"]
@@ -218,37 +168,10 @@ def build_graph_data(
         node_is_placeholder = bool((node.get("metadata") or {}).get("placeholder_reusable_ref"))
         if existing_is_placeholder and not node_is_placeholder:
             deduped[key] = node
-        # else keep existing — already authoritative, or both are
-        # placeholders (referenced file wasn't itself scanned, e.g. a
-        # typo'd path); first-wins is an acceptable fallback there.
 
     return list(deduped.values()), all_edges
 
-
 def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: list[dict], edges: list[dict]) -> None:
-    """Cypher MERGE equivalent of the Postgres INSERTs below, scoped to this
-    repo's own dependency-graph nodes (workflow/job/composite_action) —
-    never touches Service/ExternalRepo/ReusableWorkflow (org-wide, shared
-    across repos) or GovernanceRule/Failure/RuntimeMetric.
-
-    Every edge is tagged with org_login/repo_name so the read path can filter
-    "this repo's dependency-graph edges" directly by property, rather than by
-    which nodes an edge touches — an orchestrator.yaml-derived edge connects
-    two org-wide Service nodes, neither of which is in the repo-scoped node
-    set, so node-touching alone can't recover which repo's build produced it.
-    Known limitation: if two repos' orchestrator.yaml files both describe a
-    dependency between the same two service names, MERGE reuses one
-    relationship and the tag reflects whichever repo wrote it last.
-
-    'reusable_workflow' stays in the DETACH DELETE list below even though it
-    is no longer repo-scoped (see _REPO_SCOPED_TYPES) purely to migrate
-    nodes written under the old per-repo-scoped identity scheme: the first
-    rebuild of a given repo after this change still matches and clears its
-    old repo_name-tagged ReusableWorkflow nodes, after which the MERGE below
-    recreates them under the new org-wide identity_key. Once migrated, this
-    clause is a permanent no-op for that node type (new nodes carry
-    repo_name = None, which never equals $repo) — harmless to leave in.
-    """
     tx.run(
         """
         MATCH (n:GraphNode {org_login: $org, repo_name: $repo})
@@ -266,19 +189,10 @@ def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: lis
         label = _NODE_LABELS[node_type]
         identity = _identity_key(org_login, node_type, node["external_key"], repo_name)
         key_to_identity[node["external_key"]] = identity
-        # repo_name is org-wide-sentinel-less for repo-scoped types (the real
-        # repo_name), but for org-wide types (service/external_repo) there is
-        # no meaningful repo_name — store None so read-path queries scoped to
-        # a specific repo don't accidentally match them.
+
         node_repo_name = repo_name if node_type in _REPO_SCOPED_TYPES else None
         if node_type in _ORG_WIDE_DECLARABLE_TYPES:
-            # Zero-edge org-wide nodes (e.g. a standalone orchestrator.yaml
-            # entry nothing depends on) have no edge for the read path to
-            # traverse into from this repo's dependency-graph query, so
-            # track "which repos declared this node" directly as a list
-            # property instead — accumulated across builds since these
-            # nodes are never DETACH DELETEd (see the DETACH DELETE above,
-            # scoped to repo-owned types only).
+
             tx.run(
                 f"""
                 MERGE (n:GraphNode:{label} {{identity_key: $identity}})
@@ -336,11 +250,9 @@ def _write_dependency_subgraph_tx(tx, org_login: str, repo_name: str, nodes: lis
             meta=json.dumps(edge["metadata"]) if edge.get("metadata") is not None else None,
         )
 
-
 def persist_graph(
     session: Session, graph_id: uuid.UUID, org_login: str, repo_name: str, nodes: list[dict], edges: list[dict]
 ) -> None:
-    """Write parsed nodes/edges to graph_nodes/graph_edges and mark the graph completed."""
     if settings.GRAPH_DUAL_WRITE_NEO4J:
         with get_driver().session() as neo_session:
             neo_session.execute_write(_write_dependency_subgraph_tx, org_login, repo_name, nodes, edges)

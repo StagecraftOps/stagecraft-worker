@@ -1,12 +1,3 @@
-"""SES email notifications — "AI suggested a fix" alert to the org owner.
-
-Best-effort, like _ingest_embedding in remediation.py: a missing/unverified
-SES sender identity, a throttled send, or any other SES error must never
-fail the remediation itself. Callers are expected to wrap send_fix_notification
-in their own try/except (matching the existing pattern for non-critical
-side effects in this file) rather than this module swallowing errors itself,
-so a permanent SES misconfiguration is still visible in logs.
-"""
 import logging
 
 import boto3
@@ -35,7 +26,6 @@ _BODY_HTML = """<html><body>
 <p style="color:#888;font-size:12px">This is an automated notification — reply-to is not monitored.</p>
 </body></html>"""
 
-
 def send_fix_notification(
     to_email: str,
     repo_name: str,
@@ -43,9 +33,6 @@ def send_fix_notification(
     root_cause: str,
     remediation_id: str,
 ) -> None:
-    """Send the "AI suggested a fix" email via SES. Raises on failure — the
-    caller decides whether/how to swallow it (matches _ingest_embedding's
-    pattern: best-effort wrapped at the call site, not inside this helper)."""
     if not settings.SES_ENABLED:
         return
     if not settings.SES_FROM_EMAIL:

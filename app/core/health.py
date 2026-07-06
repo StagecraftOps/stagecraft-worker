@@ -1,14 +1,3 @@
-"""Minimal stdlib HTTP server exposing /healthz, /ready, and /internal/investigate.
-
-Celery and the SQS consumer have no web framework and no HTTP port. K8s
-liveness/readiness probes need an HTTP endpoint, so this runs a tiny
-http.server on a daemon thread alongside the real process — no new
-dependency, no interference with Celery's own event loop / the consumer's
-polling loop. /internal/investigate piggybacks on the same server rather
-than introducing FastAPI/uvicorn just for one synchronous endpoint:
-stagecraft-api's chat.py calls it directly (not via Celery/SQS) because a chat
-request needs a request/response cycle, not async dispatch.
-"""
 import json
 import logging
 import threading
@@ -20,11 +9,8 @@ logger = logging.getLogger(__name__)
 
 _ready = threading.Event()
 
-
 def mark_ready() -> None:
-    """Call once the process has finished startup and is doing real work."""
     _ready.set()
-
 
 class _HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
@@ -85,9 +71,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args) -> None:
         pass
 
-
 def start_health_server(port: int = 8080) -> ThreadingHTTPServer:
-    """Start the health server on a daemon thread and return it."""
     server = ThreadingHTTPServer(("0.0.0.0", port), _HealthHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

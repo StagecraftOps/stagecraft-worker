@@ -1,4 +1,3 @@
-"""Celery tasks for FR-3 (template adoption diff) and FR-4 (repeated-pattern discovery)."""
 import hashlib
 import json
 import logging
@@ -17,7 +16,6 @@ from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
 
 logger = logging.getLogger(__name__)
 
-
 def _fetch_workflow_contents(
     github: GitHubRemediationClient, owner: str, repo: str, ref: str
 ) -> dict[str, str]:
@@ -29,10 +27,8 @@ def _fetch_workflow_contents(
             contents[path] = content
     return contents
 
-
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def run_template_diff_task(self, message: dict) -> dict:
-    """Diff every workflow file in a repo against every active template for its org."""
     org_login = message["org_login"]
     repo_name = message["repo_name"]
     ref = message.get("ref") or "main"
@@ -58,10 +54,6 @@ def run_template_diff_task(self, message: dict) -> dict:
             for template_id, template_name, template_yaml in templates:
                 diff = diff_workflow_against_template(content, template_yaml)
 
-                # LLM layer, FR-3: WHY the gap matters, not just WHAT it is --
-                # skipped for fully-compliant diffs (nothing to judge) and
-                # best-effort otherwise (a Bedrock hiccup shouldn't fail the
-                # whole structural analysis, which has already succeeded).
                 if diff["missing_components"] or diff["version_drift"]:
                     try:
                         diff["narrative"] = bedrock.narrate_template_diff(diff, path, template_name)
@@ -106,10 +98,8 @@ def run_template_diff_task(self, message: dict) -> dict:
         if github:
             github.close()
 
-
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def run_pattern_frequency_task(self, message: dict) -> dict:
-    """Find component patterns repeated across a repo's workflow files."""
     org_login = message["org_login"]
     repo_name = message["repo_name"]
     ref = message.get("ref") or "main"
@@ -124,14 +114,6 @@ def run_pattern_frequency_task(self, message: dict) -> dict:
 
         clusters = find_repeated_patterns(workflow_contents, min_occurrences=min_occurrences)
 
-        # LLM layer, FR-4: exact-hash clustering above only ever catches
-        # byte-identical component signatures, so two jobs doing the same
-        # thing with one extra or reordered step never cluster. Judge the
-        # near-miss groups it missed and, for genuine matches, get a drafted
-        # reusable-workflow YAML -- something an exact-hash cluster never
-        # produces (it only reports "these N files share this signature").
-        # Best-effort per group: one bad Bedrock call shouldn't drop every
-        # other group already confirmed in this run.
         bedrock = BedrockRemediationClient()
         near_miss_groups = find_near_miss_groups(workflow_contents, clusters, min_occurrences=min_occurrences)
         for group in near_miss_groups:
@@ -157,7 +139,7 @@ def run_pattern_frequency_task(self, message: dict) -> dict:
             })
 
         now = datetime.now(timezone.utc)
-        # Replace this org's prior pattern-cluster results with the fresh run.
+
         session.execute(text("DELETE FROM pattern_clusters WHERE org_login = :org"), {"org": org_login})
         for cluster in clusters:
             session.execute(

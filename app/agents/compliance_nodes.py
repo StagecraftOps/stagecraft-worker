@@ -1,8 +1,3 @@
-"""Compliance Agent — framework-specific control-presence checks against a
-workflow's structure (HIPAA/PCI/SOC2, etc). Writes to the shared
-compliance_findings table with governance_document_id=NULL, distinguishing
-it from the Governance Agent's document-based findings.
-"""
 import json
 
 from app.agents.compliance_state import ComplianceState
@@ -29,7 +24,6 @@ _FRAMEWORK_CONTROLS = {
         "change-management approval gate before production deploy",
     ],
 }
-
 
 def check_framework_controls(state: ComplianceState) -> ComplianceState:
     framework = state.get("framework", "")
@@ -61,9 +55,7 @@ def check_framework_controls(state: ComplianceState) -> ComplianceState:
 
     return {**state, "findings": parsed, "agent_trace": trace}
 
-
 def _parse_json_list(raw: str) -> list[dict]:
-    """Like _parse_json, but for a top-level JSON array instead of an object."""
     stripped = raw.strip()
     if stripped.startswith("```"):
         stripped = "\n".join(

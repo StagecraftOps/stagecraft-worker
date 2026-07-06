@@ -1,6 +1,3 @@
-"""Celery tasks for FR-5/FR-6: governance-document ingestion and analysis
-dispatch to the Compliance Agent (framework mode) or Governance Agent
-(document mode)."""
 import json
 import logging
 import uuid
@@ -19,14 +16,11 @@ logger = logging.getLogger(__name__)
 
 _CHUNK_SIZE = 1500
 
-
 def _chunk_text(text_value: str, size: int = _CHUNK_SIZE) -> list[str]:
     return [text_value[i:i + size] for i in range(0, len(text_value), size) if text_value[i:i + size].strip()]
 
-
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def extract_governance_requirements_task(self, message: dict) -> dict:
-    """Extract structured requirements from an uploaded doc and embed it for retrieval."""
     document_id = uuid.UUID(message["document_id"])
     session = SyncSessionLocal()
     try:
@@ -54,7 +48,6 @@ def extract_governance_requirements_task(self, message: dict) -> dict:
             {"id": str(document_id), "req": json.dumps({"requirements": structured}), "now": datetime.now(timezone.utc)},
         )
 
-        # Chunk + embed for the Governance Agent's pgvector retrieval.
         session.execute(
             text("DELETE FROM log_embeddings WHERE source_type = 'governance_doc' AND source_id = :id"),
             {"id": str(document_id)},
@@ -86,20 +79,8 @@ def extract_governance_requirements_task(self, message: dict) -> dict:
     finally:
         session.close()
 
-
 @app.task(bind=True, max_retries=2, default_retry_delay=30, acks_late=True, reject_on_worker_lost=True)
 def run_governance_analysis_task(self, message: dict) -> dict:
-    """Diff every workflow file in a repo against a framework (Compliance Agent)
-    or an uploaded document (Governance Agent), writing compliance_findings.
-
-    Each workflow file's findings are replaced and committed individually
-    (rather than one commit at the end) so that a run spanning many files —
-    one Bedrock-backed agent invocation apiece — durably persists everything
-    completed so far even if the worker is killed mid-run (e.g. a deploy).
-    A killed run resumes as a brand-new task (see task_reject_on_worker_lost
-    in celery_config.py) and simply overwrites/redoes remaining files; nothing
-    already committed is lost.
-    """
     org_login = message["org_login"]
     repo_name = message["repo_name"]
     ref = message.get("ref") or "main"
@@ -139,17 +120,12 @@ def run_governance_analysis_task(self, message: dict) -> dict:
                         "agent_trace": [],
                     })
             except Exception:
-                # One file's agent call failing (e.g. a transient Bedrock
-                # hiccup) shouldn't discard every other file already done in
-                # this run or abort the remaining ones — log and move on.
+
                 logger.exception(
                     "Governance analysis failed for %s/%s file %s; skipping it", org_login, repo_name, path
                 )
                 continue
 
-            # Replace this file's prior findings for this mode so re-running
-            # (deliberately, or resuming after a kill) is idempotent instead
-            # of accumulating duplicate rows.
             session.execute(
                 text(
                     """

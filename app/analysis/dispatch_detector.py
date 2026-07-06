@@ -1,10 +1,3 @@
-"""Detects repository_dispatch / workflow_dispatch REST calls inside `run:` steps.
-
-These are opaque to GitHub's own dependency graph and to any uses:/needs:
-static parser — the only signal is a `curl ... dispatches` (or `gh api
-.../dispatches`) call inside a shell step, so this is a best-effort regex
-heuristic, not a certain edge.
-"""
 import re
 
 import yaml
@@ -15,9 +8,7 @@ _DISPATCH_PATTERN = re.compile(
     r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/dispatches",
 )
 
-
 def find_dispatch_edges(path: str, content: str) -> tuple[list[dict], list[dict]]:
-    """Return (nodes, edges) for repository_dispatch calls found in run: steps."""
     try:
         doc = yaml.safe_load(content)
     except yaml.YAMLError:

@@ -1,26 +1,10 @@
-"""FR-3: structural diff of a workflow against an org's approved template.
-
-diff_workflow_against_template and narrate_diff below are deterministic
-dict/set comparison and string formatting — no AI, and the diff itself never
-depends on any. The actual LLM layer (WHY a gap matters, not just WHAT it
-is) is BedrockRemediationClient.narrate_template_diff, called from
-app.tasks.standardization for diffs that aren't fully compliant; narrate_diff
-here remains the deterministic fallback if that call fails.
-"""
 import re
 
 import yaml
 
 _VERSION_SPLIT = re.compile(r"^(.*)@([^@]+)$")
 
-
 def _extract_components(workflow_yaml: str) -> dict[str, str | None]:
-    """Return {component_base_name: version_or_None} for a workflow.
-
-    A "component" is any job-level reusable-workflow call or step-level
-    action reference (local composite action or marketplace action),
-    identified by its base name (before the trailing @version).
-    """
     try:
         doc = yaml.safe_load(workflow_yaml)
     except yaml.YAMLError:
@@ -52,24 +36,13 @@ def _extract_components(workflow_yaml: str) -> dict[str, str | None]:
 
     return components
 
-
 def _split_version(uses: str) -> tuple[str, str | None]:
     match = _VERSION_SPLIT.match(uses)
     if match:
         return match.group(1), match.group(2)
     return uses, None
 
-
 def diff_workflow_against_template(workflow_yaml: str, template_yaml: str) -> dict:
-    """Return a structural diff summary and a 0-100 adoption score.
-
-    {
-      "missing_components": [...],   # required by the template, absent here
-      "extra_components": [...],     # present here, not in the template
-      "version_drift": [{"component": ..., "template_version": ..., "workflow_version": ...}],
-      "adoption_score": int,
-    }
-    """
     template_components = _extract_components(template_yaml)
     workflow_components = _extract_components(workflow_yaml)
 
@@ -100,13 +73,7 @@ def diff_workflow_against_template(workflow_yaml: str, template_yaml: str) -> di
         "adoption_score": adoption_score,
     }
 
-
 def narrate_diff(diff: dict, workflow_file: str, template_name: str) -> str:
-    """Optional: turn a structured diff into a human-readable summary sentence.
-
-    Pure string formatting, not an LLM call, by default — kept dependency-free
-    so callers that don't need prose (e.g. the API/frontend) never pay for it.
-    """
     if not diff["missing_components"] and not diff["version_drift"]:
         return f"{workflow_file} fully adopts the '{template_name}' template."
     parts = []

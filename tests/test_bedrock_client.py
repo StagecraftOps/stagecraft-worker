@@ -1,4 +1,3 @@
-"""Tests for BedrockRemediationClient response parsing."""
 import json
 from unittest.mock import MagicMock, patch
 import pytest
@@ -8,7 +7,6 @@ os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("SECRET_KEY", "test-secret-only")
 
 def _make_bedrock_response(content: str) -> dict:
-    """Build a mock Bedrock Converse API response dict with the given content text."""
     return {"output": {"message": {"content": [{"text": content}]}}}
 
 @patch("boto3.client")
@@ -35,7 +33,6 @@ def test_valid_json_response_parsed(mock_boto):
 
 @patch("boto3.client")
 def test_markdown_fenced_json_parsed(mock_boto):
-    """Bedrock sometimes wraps output in ```json ... ``` — must be stripped."""
     from app.services.bedrock_client import BedrockRemediationClient
 
     wrapped = "```json\n" + json.dumps({
@@ -56,7 +53,6 @@ def test_markdown_fenced_json_parsed(mock_boto):
 
 @patch("boto3.client")
 def test_missing_required_key_raises(mock_boto):
-    """A Bedrock response missing a required field must raise RuntimeError."""
     from app.services.bedrock_client import BedrockRemediationClient
 
     partial = json.dumps({"root_cause": "r", "fixed_yaml": "y"})
@@ -72,7 +68,6 @@ def test_missing_required_key_raises(mock_boto):
 
 @patch("boto3.client")
 def test_invalid_json_raises(mock_boto):
-    """Non-JSON Bedrock output must raise RuntimeError, not NameError."""
     from app.services.bedrock_client import BedrockRemediationClient
 
     mock_client = MagicMock()
@@ -104,7 +99,6 @@ def test_narrate_template_diff_returns_narrative(mock_boto):
     narrative = client.narrate_template_diff(diff, "ci.yml", "Standard CI")
     assert narrative == "Missing the security-scan step is a real risk here."
 
-
 @patch("boto3.client")
 def test_judge_pattern_cluster_match_returns_verdict(mock_boto):
     from app.services.bedrock_client import BedrockRemediationClient
@@ -127,7 +121,6 @@ def test_judge_pattern_cluster_match_returns_verdict(mock_boto):
     assert verdict["pattern_name"] == "build-test-push"
     assert "draft_template_yaml" in verdict
 
-
 @patch("boto3.client")
 def test_judge_pattern_cluster_no_match_returns_none(mock_boto):
     from app.services.bedrock_client import BedrockRemediationClient
@@ -144,11 +137,8 @@ def test_judge_pattern_cluster_no_match_returns_none(mock_boto):
     )
     assert verdict is None
 
-
 @patch("boto3.client")
 def test_judge_pattern_cluster_match_missing_yaml_returns_none(mock_boto):
-    """A match verdict without a usable draft is treated as no verdict at
-    all -- there's nothing actionable to store."""
     from app.services.bedrock_client import BedrockRemediationClient
 
     response = json.dumps({"is_match": True, "pattern_name": "x"})
@@ -163,10 +153,8 @@ def test_judge_pattern_cluster_match_missing_yaml_returns_none(mock_boto):
     )
     assert verdict is None
 
-
 @patch("boto3.client")
 def test_worker_decrypt_key_mismatch_raises(mock_boto):
-    """decrypt_token with a wrong key must raise InvalidToken, not return garbage."""
     import base64, hashlib
     from cryptography.fernet import Fernet, InvalidToken
     from app.core.security import decrypt_token

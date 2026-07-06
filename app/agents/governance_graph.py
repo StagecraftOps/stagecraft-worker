@@ -4,7 +4,6 @@ from app.agents.governance_nodes import compare_controls, retrieve_relevant_requ
 from app.agents.governance_state import GovernanceState
 from app.agents.graph_context import retrieve_graph_context
 
-
 def build_governance_graph() -> StateGraph:
     graph = StateGraph(GovernanceState)
     graph.add_node("retrieve", retrieve_relevant_requirements)
@@ -15,6 +14,5 @@ def build_governance_graph() -> StateGraph:
     graph.add_edge("graph_context", "compare")
     graph.add_edge("compare", END)
     return graph.compile()
-
 
 governance_graph = build_governance_graph()

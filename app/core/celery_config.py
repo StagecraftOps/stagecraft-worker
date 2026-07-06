@@ -5,11 +5,6 @@ from app.core.config import settings
 broker_url = settings.REDIS_URL
 result_backend = settings.REDIS_URL
 
-# rediss:// (TLS) requires ssl_cert_reqs to be set explicitly — unlike
-# redis-py, Celery's redis transport won't default it, and raises at
-# startup ("A rediss:// URL must have parameter ssl_cert_reqs...") if it's
-# missing from both the URL and these settings. No verification, matching
-# the redis-py client's own ssl_cert_reqs="none" in tasks/remediation.py.
 if broker_url.startswith("rediss://"):
     broker_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
     redis_backend_use_ssl = {"ssl_cert_reqs": ssl.CERT_NONE}
@@ -42,14 +37,6 @@ task_acks_late = True
 task_reject_on_worker_lost = True
 worker_prefetch_multiplier = 1
 
-# Must stay comfortably above the slowest task's real running time, or Redis
-# redelivers a task that's still legitimately in progress to a second worker,
-# causing concurrent duplicate execution (observed live: 600s was shorter
-# than run_governance_analysis_task's ~20-35min real duration for a
-# 100+-workflow repo, so it got redelivered mid-run every time). Per-file
-# checkpointing (see governance.py) means a genuinely killed worker only
-# loses its current in-flight file, not the whole run, so biasing this
-# value upward costs little.
 broker_transport_options = {"visibility_timeout": 5400}
 
 result_expires = 86400

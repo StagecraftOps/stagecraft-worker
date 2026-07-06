@@ -1,13 +1,9 @@
-"""Tests for the Performance Optimization Agent's pure recomputation node
-(simulate_savings, FR-9) — no Bedrock call, so directly unit-testable.
-"""
 import os
 
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("SECRET_KEY", "test-secret-for-worker")
 
 from app.agents.performance_nodes import simulate_savings
-
 
 def test_no_draft_yaml_means_baseline_equals_simulated():
     state = {
@@ -20,7 +16,6 @@ def test_no_draft_yaml_means_baseline_equals_simulated():
     result = simulate_savings(state)
     assert result["baseline_critical_path_seconds"] == 130
     assert result["simulated_critical_path_seconds"] == 130
-
 
 def test_draft_yaml_removing_a_needs_edge_reduces_simulated_duration():
     state = {
@@ -45,8 +40,7 @@ jobs:
         "agent_trace": [],
     }
     result = simulate_savings(state)
-    # baseline: lint(10) -> slow-test(100) -> deploy(20) = 130
+
     assert result["baseline_critical_path_seconds"] == 130
-    # simulated: lint no longer blocks slow-test, so critical path is
-    # slow-test(100) -> deploy(20) = 120
+
     assert result["simulated_critical_path_seconds"] == 120

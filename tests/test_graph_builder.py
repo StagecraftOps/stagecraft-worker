@@ -1,8 +1,3 @@
-"""Tests for build_graph_data's node dedupe -- specifically that a local
-`uses:` reusable-workflow reference collapses onto the real `workflow` node
-for that file regardless of which file is scanned first (see
-workflow_parser._resolve_reusable_workflow_ref and the dedupe fix in
-build_graph_data)."""
 from app.analysis.graph_builder import _identity_key, build_graph_data
 
 _CALLER = """
@@ -24,10 +19,9 @@ jobs:
       - run: echo notify
 """
 
-
 class _FakeGitHub:
     def __init__(self, files_in_order):
-        self._files_in_order = files_in_order  # list[(path, content)], scan order
+        self._files_in_order = files_in_order
 
     def get_repo_tree(self, owner, repo, ref):
         return [{"path": p, "type": "blob"} for p, _ in self._files_in_order]
@@ -38,17 +32,15 @@ class _FakeGitHub:
                 return content
         return None
 
-
 def _run(order):
     github = _FakeGitHub(order)
     nodes, edges = build_graph_data(github, "acme", "repo", "main")
     bridged = [n for n in nodes if n["external_key"] == "workflow::.github/workflows/_template-notify-slack.yml"]
     assert len(bridged) == 1, "collision must collapse to exactly one node"
     assert bridged[0]["node_type"] == "workflow"
-    assert bridged[0]["display_name"] == "Notify Slack"  # authoritative wins, not the raw uses: string
+    assert bridged[0]["display_name"] == "Notify Slack"
     assert bridged[0]["metadata"] == {"triggers": ["workflow_call"]}
     assert any(n["external_key"] == "job::.github/workflows/_template-notify-slack.yml::notify" for n in nodes)
-
 
 def test_dedupe_when_callee_scanned_after_caller():
     _run([
@@ -56,29 +48,19 @@ def test_dedupe_when_callee_scanned_after_caller():
         (".github/workflows/_template-notify-slack.yml", _CALLEE),
     ])
 
-
 def test_dedupe_when_callee_scanned_before_caller():
     _run([
         (".github/workflows/_template-notify-slack.yml", _CALLEE),
         (".github/workflows/caller.yml", _CALLER),
     ])
 
-
 def test_external_reusable_workflow_identity_is_shared_across_repos():
-    """Two repos in the same org calling the identical external/marketplace
-    reusable workflow must resolve to the SAME Neo4j identity_key, so they
-    share one node instead of each getting their own -- reusable_workflow is
-    intentionally excluded from _REPO_SCOPED_TYPES for exactly this reason."""
     external_key = "reusable_workflow::some-org/shared-workflows/.github/workflows/notify.yml@v2"
     identity_repo_a = _identity_key("acme", "reusable_workflow", external_key, "repo-a")
     identity_repo_b = _identity_key("acme", "reusable_workflow", external_key, "repo-b")
     assert identity_repo_a == identity_repo_b
 
-
 def test_workflow_and_job_identity_still_repo_scoped():
-    """workflow/job/composite_action must stay repo-scoped -- two repos each
-    with their own workflow file named the same path are different nodes,
-    unlike the shared-template case above."""
     for node_type in ("workflow", "job", "composite_action"):
         key = f"{node_type}::.github/workflows/ci.yml"
         identity_repo_a = _identity_key("acme", node_type, key, "repo-a")

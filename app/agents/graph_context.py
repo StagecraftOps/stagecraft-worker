@@ -1,27 +1,9 @@
-"""GraphRAG retrieval step shared by the Governance and Compliance agents.
-
-Pulls structural facts straight from Neo4j -- governance rules already
-linked to this workflow, its known failure history, and its dependencies --
-to give the LLM cross-workflow/cross-audit context that a text-only
-retrieval (pgvector policy search for Governance, nothing at all for
-Compliance) can't surface on its own. This is the actual "graph" half of
-GraphRAG: vector search finds relevant policy *text*, this finds relevant
-graph *structure*.
-
-Works against either agent's state dict (both share repo_owner/repo_name/
-workflow_file/agent_trace) without needing a shared TypedDict base.
-"""
 from app.core.config import settings
 from app.services.neo4j_client import get_driver
-
 
 def retrieve_graph_context(state: dict) -> dict:
     trace = state.get("agent_trace", [])
 
-    # Gated on dual-write, not GRAPH_BACKEND (the dependency_graph.py read-path
-    # cutover flag) -- this only needs Neo4j to have data, which dual-write
-    # alone provides, independent of whether the graph API routes have been
-    # cut over to reading from it yet.
     if not settings.GRAPH_DUAL_WRITE_NEO4J:
         trace.append("retrieve_graph_context: skipped (GRAPH_DUAL_WRITE_NEO4J is off)")
         return {**state, "graph_context": {}, "agent_trace": trace}
@@ -55,11 +37,7 @@ def retrieve_graph_context(state: dict) -> dict:
     )
     return {**state, "graph_context": context, "agent_trace": trace}
 
-
 def format_graph_context_block(state: dict) -> str:
-    """Renders graph_context into a prompt-ready block, or a clear
-    "none available" line if empty/skipped -- never silently omitted, so a
-    reviewer reading the prompt trace can tell whether GraphRAG ran."""
     context = state.get("graph_context") or {}
     rules = context.get("existing_rules") or []
     failures = context.get("known_failures") or []

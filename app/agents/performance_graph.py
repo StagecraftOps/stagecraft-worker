@@ -3,7 +3,6 @@ from langgraph.graph import END, StateGraph
 from app.agents.performance_nodes import draft_future_yaml, propose_optimizations, simulate_savings
 from app.agents.performance_state import PerformanceState
 
-
 def build_performance_graph() -> StateGraph:
     graph = StateGraph(PerformanceState)
 
@@ -17,6 +16,5 @@ def build_performance_graph() -> StateGraph:
     graph.add_edge("simulate", END)
 
     return graph.compile()
-
 
 performance_graph = build_performance_graph()

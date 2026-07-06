@@ -1,4 +1,3 @@
-"""Celery task: build a repo's dependency graph from its GitHub Actions workflows."""
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -11,7 +10,6 @@ from app.services.github_client import GitHubRemediationClient
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
 
 logger = logging.getLogger(__name__)
-
 
 @app.task(bind=True, max_retries=2, default_retry_delay=30)
 def build_dependency_graph_task(self, message: dict) -> dict:
@@ -40,13 +38,6 @@ def build_dependency_graph_task(self, message: dict) -> dict:
             "Dependency graph %s completed: %d nodes, %d edges", graph_id, len(nodes), len(edges)
         )
 
-        # A dependency-graph rebuild deletes and recreates this repo's
-        # Workflow/Job nodes in Neo4j (see graph_builder._write_dependency_subgraph_tx),
-        # which severs any GOVERNS/CAUSED_BY/MEASURED_BY relationships the
-        # knowledge graph had pointing into them -- confirmed live (a rebuild
-        # left the knowledge graph with 0 edges until manually rebuilt).
-        # Self-heal by re-linking automatically instead of leaving that as a
-        # manual step someone has to remember.
         from app.tasks.knowledge_graph import build_knowledge_graph_task
         build_knowledge_graph_task.delay({"org_login": org_login})
 

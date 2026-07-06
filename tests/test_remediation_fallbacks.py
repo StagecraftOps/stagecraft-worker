@@ -4,7 +4,6 @@ from unittest.mock import MagicMock, patch
 os.environ.setdefault("DATABASE_URL", "postgresql://x:x@localhost/x")
 os.environ.setdefault("SECRET_KEY", "test-secret-only")
 
-
 def test_recover_suggested_yaml_uses_single_agent_when_direct_fix_is_invalid():
     from app.tasks.remediation import _recover_suggested_yaml
 
@@ -42,7 +41,6 @@ def test_recover_suggested_yaml_uses_single_agent_when_direct_fix_is_invalid():
 
     assert recovered is not None
     assert "jobs:" in recovered
-
 
 def test_recover_suggested_yaml_returns_none_when_all_fallbacks_are_invalid():
     from app.tasks.remediation import _recover_suggested_yaml

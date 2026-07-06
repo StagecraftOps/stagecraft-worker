@@ -3,7 +3,6 @@ from langgraph.graph import END, StateGraph
 from app.agents.peer_review_nodes import detect_workflow_changes, review_diff
 from app.agents.peer_review_state import PeerReviewState
 
-
 def build_peer_review_graph() -> StateGraph:
     graph = StateGraph(PeerReviewState)
 
@@ -15,6 +14,5 @@ def build_peer_review_graph() -> StateGraph:
     graph.add_edge("review", END)
 
     return graph.compile()
-
 
 peer_review_graph = build_peer_review_graph()

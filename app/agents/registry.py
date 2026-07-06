@@ -1,7 +1,3 @@
-"""Maps an agent task-type name to its compiled LangGraph, so the SQS
-consumer/Celery tasks can dispatch by name instead of hardcoding an import
-per agent as the fleet grows (failure RCA, peer review, compliance,
-governance, performance optimization)."""
 from app.agents.compliance_graph import compliance_graph
 from app.agents.governance_graph import governance_graph
 from app.agents.graph import remediation_graph
@@ -15,7 +11,6 @@ AGENT_GRAPHS = {
     "governance": governance_graph,
     "performance_optimization": performance_graph,
 }
-
 
 def get_agent_graph(name: str):
     if name not in AGENT_GRAPHS:

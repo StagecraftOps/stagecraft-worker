@@ -1,6 +1,4 @@
-"""Tests for app/analysis/orchestrator_parser.py."""
 from app.analysis.orchestrator_parser import parse_orchestrator
-
 
 def test_layers_computed_from_depends_on():
     content = """
@@ -25,7 +23,6 @@ services:
     assert ("service::auth/token-service", "service::backend/zestimate-service") in dep_edges
     assert ("service::infra/api-gateway", "service::backend/zestimate-service") in dep_edges
 
-
 def test_circular_dependency_is_flattened_not_raised():
     content = """
 services:
@@ -35,10 +32,9 @@ services:
     depends_on: ["a"]
 """
     nodes, edges = parse_orchestrator(content)
-    # Must not raise, and both nodes still end up in the graph.
+
     assert {n["display_name"] for n in nodes} == {"a", "b"}
     assert len(edges) == 2
-
 
 def test_missing_services_key_returns_empty():
     nodes, edges = parse_orchestrator("not_services: {}\n")
