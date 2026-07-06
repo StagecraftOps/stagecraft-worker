@@ -39,6 +39,17 @@ def build_dependency_graph_task(self, message: dict) -> dict:
         logger.info(
             "Dependency graph %s completed: %d nodes, %d edges", graph_id, len(nodes), len(edges)
         )
+
+        # A dependency-graph rebuild deletes and recreates this repo's
+        # Workflow/Job nodes in Neo4j (see graph_builder._write_dependency_subgraph_tx),
+        # which severs any GOVERNS/CAUSED_BY/MEASURED_BY relationships the
+        # knowledge graph had pointing into them -- confirmed live (a rebuild
+        # left the knowledge graph with 0 edges until manually rebuilt).
+        # Self-heal by re-linking automatically instead of leaving that as a
+        # manual step someone has to remember.
+        from app.tasks.knowledge_graph import build_knowledge_graph_task
+        build_knowledge_graph_task.delay({"org_login": org_login})
+
         return {"status": "completed", "graph_id": str(graph_id), "nodes": len(nodes), "edges": len(edges)}
 
     except Exception as exc:
