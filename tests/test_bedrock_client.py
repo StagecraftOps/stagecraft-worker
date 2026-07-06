@@ -85,6 +85,86 @@ def test_invalid_json_raises(mock_boto):
         client.analyze_failure("yaml", "logs", "CI", "org/repo")
 
 @patch("boto3.client")
+def test_narrate_template_diff_returns_narrative(mock_boto):
+    from app.services.bedrock_client import BedrockRemediationClient
+
+    response = json.dumps({"narrative": "Missing the security-scan step is a real risk here."})
+    mock_client = MagicMock()
+    mock_client.converse.return_value = _make_bedrock_response(response)
+    mock_client.exceptions.ThrottlingException = type("ThrottlingException", (Exception,), {})
+    mock_boto.return_value = mock_client
+
+    client = BedrockRemediationClient()
+    diff = {
+        "missing_components": ["./.github/workflows/_template-security-scan.yml"],
+        "extra_components": [],
+        "version_drift": [],
+        "adoption_score": 50,
+    }
+    narrative = client.narrate_template_diff(diff, "ci.yml", "Standard CI")
+    assert narrative == "Missing the security-scan step is a real risk here."
+
+
+@patch("boto3.client")
+def test_judge_pattern_cluster_match_returns_verdict(mock_boto):
+    from app.services.bedrock_client import BedrockRemediationClient
+
+    response = json.dumps({
+        "is_match": True,
+        "pattern_name": "build-test-push",
+        "draft_template_yaml": "on: workflow_call\njobs:\n  build: {}\n",
+    })
+    mock_client = MagicMock()
+    mock_client.converse.return_value = _make_bedrock_response(response)
+    mock_client.exceptions.ThrottlingException = type("ThrottlingException", (Exception,), {})
+    mock_boto.return_value = mock_client
+
+    client = BedrockRemediationClient()
+    verdict = client.judge_pattern_cluster(
+        [{"job_key": "a.yml::build", "components": ["x", "y"]}], min_occurrences=3,
+    )
+    assert verdict is not None
+    assert verdict["pattern_name"] == "build-test-push"
+    assert "draft_template_yaml" in verdict
+
+
+@patch("boto3.client")
+def test_judge_pattern_cluster_no_match_returns_none(mock_boto):
+    from app.services.bedrock_client import BedrockRemediationClient
+
+    response = json.dumps({"is_match": False})
+    mock_client = MagicMock()
+    mock_client.converse.return_value = _make_bedrock_response(response)
+    mock_client.exceptions.ThrottlingException = type("ThrottlingException", (Exception,), {})
+    mock_boto.return_value = mock_client
+
+    client = BedrockRemediationClient()
+    verdict = client.judge_pattern_cluster(
+        [{"job_key": "a.yml::build", "components": ["x", "y"]}], min_occurrences=3,
+    )
+    assert verdict is None
+
+
+@patch("boto3.client")
+def test_judge_pattern_cluster_match_missing_yaml_returns_none(mock_boto):
+    """A match verdict without a usable draft is treated as no verdict at
+    all -- there's nothing actionable to store."""
+    from app.services.bedrock_client import BedrockRemediationClient
+
+    response = json.dumps({"is_match": True, "pattern_name": "x"})
+    mock_client = MagicMock()
+    mock_client.converse.return_value = _make_bedrock_response(response)
+    mock_client.exceptions.ThrottlingException = type("ThrottlingException", (Exception,), {})
+    mock_boto.return_value = mock_client
+
+    client = BedrockRemediationClient()
+    verdict = client.judge_pattern_cluster(
+        [{"job_key": "a.yml::build", "components": ["x", "y"]}], min_occurrences=3,
+    )
+    assert verdict is None
+
+
+@patch("boto3.client")
 def test_worker_decrypt_key_mismatch_raises(mock_boto):
     """decrypt_token with a wrong key must raise InvalidToken, not return garbage."""
     import base64, hashlib

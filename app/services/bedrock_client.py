@@ -350,3 +350,90 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
                     continue
                 raise
         raise RuntimeError("correct_yaml_syntax: Bedrock invocation failed after retries")
+
+    def _invoke_json(self, prompt: str, required_keys: set[str], max_tokens: int = 2048) -> dict:
+        """Shared call+parse path for narrate_template_diff/judge_pattern_cluster
+        below -- same retry-on-throttle and markdown-fence-stripping behavior as
+        analyze_failure, factored out here rather than there to avoid touching
+        the older, heavily-exercised remediation path."""
+        max_retries = 2
+        last_exception: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = self._client.converse(
+                    modelId=self._model_id,
+                    messages=[{"role": "user", "content": [{"text": prompt}]}],
+                    inferenceConfig={"maxTokens": max_tokens},
+                )
+                raw_text: str = response["output"]["message"]["content"][0]["text"].strip()
+                raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.MULTILINE)
+                raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE)
+                raw_text = raw_text.strip()
+                parsed: dict = json.loads(raw_text)
+                missing = required_keys - set(parsed.keys())
+                if missing:
+                    raise ValueError(f"Bedrock response missing keys: {missing}")
+                return parsed
+            except self._client.exceptions.ThrottlingException as exc:
+                last_exception = exc
+                if attempt < max_retries:
+                    time.sleep(2 ** (attempt + 1))
+                    continue
+                raise
+            except (json.JSONDecodeError, ValueError, KeyError) as exc:
+                _raw = locals().get("raw_text", "<unavailable>")
+                raise RuntimeError(
+                    f"Failed to parse Bedrock response as valid JSON: {exc}\nRaw response: {_raw}"
+                ) from exc
+        raise RuntimeError("Bedrock invocation failed after retries") from last_exception
+
+    def narrate_template_diff(self, diff: dict, workflow_file: str, template_name: str) -> str:
+        """FR-3, LLM layer: explain WHY a structural gap matters, not just WHAT
+        is missing -- template_diff.narrate_diff() already states the facts
+        deterministically (missing X, drift on Y); this adds judgment a set
+        comparison can't: is a missing component a real risk (e.g. no security
+        scan) or harmless (e.g. project-specific tooling the template never
+        anticipated). Only called for diffs that aren't fully compliant --
+        nothing to judge when there's no gap."""
+        prompt = f"""You are reviewing a GitHub Actions workflow's adherence to your organization's approved CI template.
+
+Workflow: {workflow_file}
+Template: {template_name}
+Adoption score: {diff['adoption_score']}/100
+Missing components (required by the template, absent here): {diff['missing_components'] or 'none'}
+Extra components (present here, not in the template): {diff['extra_components'] or 'none'}
+Version drift: {diff['version_drift'] or 'none'}
+
+In 2-3 sentences, explain in plain English what this gap likely means in practice and whether a reviewer should be concerned -- e.g. a missing security-scan step is a real risk worth flagging, an extra step that's harmless project-specific tooling is not. Respond with ONLY valid JSON in this exact format: {{"narrative": "..."}}"""
+        result = self._invoke_json(prompt, required_keys={"narrative"}, max_tokens=512)
+        return result["narrative"]
+
+    def judge_pattern_cluster(self, candidate_jobs: list[dict], min_occurrences: int) -> dict | None:
+        """FR-4, LLM layer: pattern_frequency.find_repeated_patterns only
+        clusters jobs with byte-identical component signatures, so two jobs
+        doing the same thing with one extra or reordered step never cluster.
+        Given a group of jobs whose signatures are similar-but-not-identical
+        (see pattern_frequency.find_near_miss_groups), ask whether they're
+        genuinely the same reusable pattern and, if so, draft the actual
+        reusable-workflow YAML for it -- the thing an exact-hash cluster only
+        ever reports as "these N files share this signature," never drafts.
+
+        candidate_jobs: [{"job_key": "path::job_id", "components": [...]}, ...]
+        Returns None if the model judges these aren't a real match, rather
+        than forcing a verdict onto jobs that only superficially overlap.
+        """
+        jobs_desc = "\n".join(
+            f"- {j['job_key']}: uses {', '.join(j['components'])}" for j in candidate_jobs
+        )
+        prompt = f"""You are looking for CI/CD jobs across a GitHub Actions monorepo that are functionally the same pattern and could share one reusable workflow template, even though their exact component lists differ slightly.
+
+Candidate jobs (component signatures are similar but not identical):
+{jobs_desc}
+
+Judge whether these {len(candidate_jobs)} jobs are doing functionally the same thing (e.g. "build, test, and push a Docker image" is the same pattern even if one job has an extra lint step or a differently-ordered step list). If they are NOT genuinely the same pattern, respond with exactly: {{"is_match": false}}. If they ARE the same pattern and there are at least {min_occurrences} of them, respond with:
+{{"is_match": true, "pattern_name": "short descriptive name", "draft_template_yaml": "a complete reusable workflow YAML (on: workflow_call) capturing the common shape, as a string with real newlines"}}
+Respond with ONLY valid JSON, no other text."""
+        result = self._invoke_json(prompt, required_keys={"is_match"}, max_tokens=2048)
+        if not result.get("is_match") or "draft_template_yaml" not in result:
+            return None
+        return result

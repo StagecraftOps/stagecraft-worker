@@ -1,6 +1,10 @@
 """FR-4: detects step/component patterns repeated across many workflows in
 an org — candidates worth extracting into a shared reusable template
-component. Pure computation (signature hashing + counting), no AI.
+component. find_repeated_patterns below is pure computation (signature
+hashing + counting), no AI. find_near_miss_groups is also pure computation
+(similarity grouping) -- the LLM judgment itself lives in
+BedrockRemediationClient.judge_pattern_cluster, called from
+app.tasks.standardization on the groups this returns.
 """
 import hashlib
 import re
@@ -78,10 +82,60 @@ def find_repeated_patterns(
         pattern_hash = hashlib.sha256("|".join(signature).encode()).hexdigest()
         clusters.append({
             "pattern_hash": pattern_hash,
-            "pattern_signature": {"components": list(signature)},
+            "pattern_signature": {"components": list(signature), "match_type": "exact"},
             "occurrence_count": len(files),
             "example_workflow_files": sorted(files)[:5],
         })
 
     clusters.sort(key=lambda c: c["occurrence_count"], reverse=True)
     return clusters
+
+
+def _jaccard(a: tuple[str, ...], b: tuple[str, ...]) -> float:
+    sa, sb = set(a), set(b)
+    if not sa or not sb:
+        return 0.0
+    return len(sa & sb) / len(sa | sb)
+
+
+def find_near_miss_groups(
+    workflow_contents: dict[str, str],
+    exact_clusters: list[dict],
+    min_occurrences: int = 3,
+    similarity_threshold: float = 0.6,
+) -> list[list[dict]]:
+    """Group jobs whose signatures are similar-but-not-identical -- missed by
+    find_repeated_patterns' exact-hash matching -- into candidate groups for
+    LLM judgment (BedrockRemediationClient.judge_pattern_cluster).
+
+    Only jobs NOT already part of an exact cluster are considered (no point
+    asking the LLM to confirm what exact hashing already proved). Grouping is
+    greedy single-linkage: a job joins the first existing group any of whose
+    members it's similar enough to, which is intentionally simple rather than
+    a proper clustering algorithm -- at this scale (a few hundred jobs per
+    analysis run) the O(n^2) pairwise comparison this implies is cheap, and
+    the LLM call downstream is the actual judgment step, not this grouping.
+    """
+    exact_signatures = {tuple(c["pattern_signature"]["components"]) for c in exact_clusters}
+
+    candidate_jobs: list[tuple[str, tuple[str, ...]]] = []
+    for path, content in workflow_contents.items():
+        for job_key, signature in _job_signatures(path, content):
+            if signature in exact_signatures:
+                continue  # already exactly clustered -- not a "near miss"
+            candidate_jobs.append((job_key, signature))
+
+    groups: list[list[tuple[str, tuple[str, ...]]]] = []
+    for job_key, signature in candidate_jobs:
+        for group in groups:
+            if any(_jaccard(signature, other_sig) >= similarity_threshold for _, other_sig in group):
+                group.append((job_key, signature))
+                break
+        else:
+            groups.append([(job_key, signature)])
+
+    return [
+        [{"job_key": k, "components": list(sig)} for k, sig in group]
+        for group in groups
+        if len(group) >= min_occurrences
+    ]

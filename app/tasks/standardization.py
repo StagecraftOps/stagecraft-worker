@@ -1,4 +1,5 @@
 """Celery tasks for FR-3 (template adoption diff) and FR-4 (repeated-pattern discovery)."""
+import hashlib
 import json
 import logging
 import uuid
@@ -7,9 +8,10 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 
 from app.analysis.graph_builder import _list_workflow_files
-from app.analysis.pattern_frequency import find_repeated_patterns
+from app.analysis.pattern_frequency import find_near_miss_groups, find_repeated_patterns
 from app.analysis.template_diff import diff_workflow_against_template
 from app.core.celery_app import app
+from app.services.bedrock_client import BedrockRemediationClient
 from app.services.github_client import GitHubRemediationClient
 from app.tasks.remediation import SyncSessionLocal, _get_github_token_for_org
 
@@ -48,12 +50,27 @@ def run_template_diff_task(self, message: dict) -> dict:
         github_token = _get_github_token_for_org(session, org_login)
         github = GitHubRemediationClient(github_token)
         workflow_contents = _fetch_workflow_contents(github, org_login, repo_name, ref)
+        bedrock = BedrockRemediationClient()
 
         now = datetime.now(timezone.utc)
         diff_count = 0
         for path, content in workflow_contents.items():
-            for template_id, _template_name, template_yaml in templates:
+            for template_id, template_name, template_yaml in templates:
                 diff = diff_workflow_against_template(content, template_yaml)
+
+                # LLM layer, FR-3: WHY the gap matters, not just WHAT it is --
+                # skipped for fully-compliant diffs (nothing to judge) and
+                # best-effort otherwise (a Bedrock hiccup shouldn't fail the
+                # whole structural analysis, which has already succeeded).
+                if diff["missing_components"] or diff["version_drift"]:
+                    try:
+                        diff["narrative"] = bedrock.narrate_template_diff(diff, path, template_name)
+                    except Exception as narrate_exc:
+                        logger.warning(
+                            "Template-diff narration failed for %s (template %s): %s",
+                            path, template_name, narrate_exc,
+                        )
+
                 session.execute(
                     text(
                         """
@@ -106,6 +123,38 @@ def run_pattern_frequency_task(self, message: dict) -> dict:
         workflow_contents = _fetch_workflow_contents(github, org_login, repo_name, ref)
 
         clusters = find_repeated_patterns(workflow_contents, min_occurrences=min_occurrences)
+
+        # LLM layer, FR-4: exact-hash clustering above only ever catches
+        # byte-identical component signatures, so two jobs doing the same
+        # thing with one extra or reordered step never cluster. Judge the
+        # near-miss groups it missed and, for genuine matches, get a drafted
+        # reusable-workflow YAML -- something an exact-hash cluster never
+        # produces (it only reports "these N files share this signature").
+        # Best-effort per group: one bad Bedrock call shouldn't drop every
+        # other group already confirmed in this run.
+        bedrock = BedrockRemediationClient()
+        near_miss_groups = find_near_miss_groups(workflow_contents, clusters, min_occurrences=min_occurrences)
+        for group in near_miss_groups:
+            try:
+                verdict = bedrock.judge_pattern_cluster(group, min_occurrences)
+            except Exception as judge_exc:
+                logger.warning("Pattern-cluster LLM judgment failed for a candidate group: %s", judge_exc)
+                continue
+            if not verdict:
+                continue
+            files = sorted({j["job_key"].split("::")[0] for j in group})
+            all_components = sorted({c for j in group for c in j["components"]})
+            clusters.append({
+                "pattern_hash": hashlib.sha256(f"semantic::{verdict['pattern_name']}".encode()).hexdigest(),
+                "pattern_signature": {
+                    "components": all_components,
+                    "match_type": "semantic",
+                    "pattern_name": verdict["pattern_name"],
+                    "draft_template_yaml": verdict["draft_template_yaml"],
+                },
+                "occurrence_count": len(group),
+                "example_workflow_files": files[:5],
+            })
 
         now = datetime.now(timezone.utc)
         # Replace this org's prior pattern-cluster results with the fresh run.

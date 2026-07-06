@@ -1,8 +1,11 @@
 """FR-3: structural diff of a workflow against an org's approved template.
 
-Deterministic dict/set comparison — no AI. A separate, optional single-shot
-Bedrock call (narrate_diff, see bottom) can turn the structured diff into a
-human-readable sentence, but the diff itself never depends on it.
+diff_workflow_against_template and narrate_diff below are deterministic
+dict/set comparison and string formatting — no AI, and the diff itself never
+depends on any. The actual LLM layer (WHY a gap matters, not just WHAT it
+is) is BedrockRemediationClient.narrate_template_diff, called from
+app.tasks.standardization for diffs that aren't fully compliant; narrate_diff
+here remains the deterministic fallback if that call fails.
 """
 import re
 
