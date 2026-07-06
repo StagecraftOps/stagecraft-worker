@@ -31,6 +31,8 @@ task_routes = {
     "app.tasks.governance.run_governance_analysis_task": {"queue": "remediation"},
     "app.tasks.optimization.run_optimization_analysis_task": {"queue": "remediation"},
     "app.tasks.knowledge_graph.build_knowledge_graph_task": {"queue": "remediation"},
+    "app.tasks.drift_detection.run_drift_detection_task": {"queue": "remediation"},
+    "app.tasks.vulnerability.run_vulnerability_remediation_task": {"queue": "remediation"},
 }
 
 task_acks_late = True
