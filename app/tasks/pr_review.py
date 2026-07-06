@@ -46,6 +46,7 @@ def process_pull_request(self, message: dict) -> dict:
 
         github_token = _get_github_token_for_org(session, repo_owner)
         github = GitHubRemediationClient(github_token)
+        author = message.get("author") or github.get_pull_request_author(repo_owner, repo_name, pr_number)
         diff = github.get_pull_request_diff(repo_owner, repo_name, pr_number)
 
         peer_review_graph = get_agent_graph("peer_review")
@@ -63,6 +64,7 @@ def process_pull_request(self, message: dict) -> dict:
                 """
                 UPDATE pr_reviews SET
                     status = 'completed',
+                    author = :author,
                     risk_score = :risk_score,
                     findings = :findings,
                     review_summary = :review_summary,
@@ -73,6 +75,7 @@ def process_pull_request(self, message: dict) -> dict:
             ),
             {
                 "id": str(review_id),
+                "author": author,
                 "risk_score": final_state.get("risk_score", 0),
                 "findings": final_state.get("findings", []),
                 "review_summary": final_state.get("review_summary", ""),

@@ -92,6 +92,16 @@ class GitHubRemediationClient:
         last_300 = all_lines[-300:] if len(all_lines) > 300 else all_lines
         return "\n".join(last_300)
 
+    def get_pull_request_author(self, owner: str, repo: str, pr_number: int) -> str | None:
+        try:
+            data = self._get(f"/repos/{owner}/{repo}/pulls/{pr_number}")
+            if isinstance(data, dict):
+                user = data.get("user") or {}
+                return user.get("login")
+        except Exception:
+            return None
+        return None
+
     def get_pull_request_diff(self, owner: str, repo: str, pr_number: int) -> str:
         response = self._client.get(
             f"/repos/{owner}/{repo}/pulls/{pr_number}",
