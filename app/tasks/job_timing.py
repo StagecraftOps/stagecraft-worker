@@ -178,7 +178,7 @@ def sync_job_timings_task(self, message: dict) -> dict:
                             (id, workflow_run_id, total_duration_seconds, critical_path_job_ids,
                              longest_job_id, computed_at)
                         VALUES
-                            (:id, :workflow_run_id, :total_duration_seconds, :critical_path_job_ids,
+                            (:id, :workflow_run_id, :total_duration_seconds, CAST(:critical_path_job_ids AS uuid[]),
                              :longest_job_id, :computed_at)
                         ON CONFLICT (workflow_run_id) DO UPDATE SET
                             total_duration_seconds = EXCLUDED.total_duration_seconds,
