@@ -76,22 +76,32 @@ def sync_job_timings_task(self, message: dict) -> dict:
             completed = _parse_gh_timestamp(gh_job.get("completed_at"))
             duration = _duration_seconds(started, completed)
 
+            # labels/runner_group_name (e.g. labels=["ubuntu-latest"] or
+            # ["self-hosted","linux","x64"]) are what actually distinguish
+            # runner *type* -- runner_name alone is just GitHub's ephemeral
+            # instance name ("GitHub Actions 1000000519"), uninformative for
+            # a runner-type breakdown, and both are only ever populated once
+            # a runner is actually assigned (empty/null for a job still queued).
             row = session.execute(
                 text(
                     """
                     INSERT INTO job_runs
                         (id, workflow_run_id, github_job_id, job_name, status, conclusion,
-                         started_at, completed_at, duration_seconds, runner_name, created_at)
+                         started_at, completed_at, duration_seconds, runner_name,
+                         runner_labels, runner_group_name, created_at)
                     VALUES
                         (:id, :workflow_run_id, :github_job_id, :job_name, :status, :conclusion,
-                         :started_at, :completed_at, :duration_seconds, :runner_name, :created_at)
+                         :started_at, :completed_at, :duration_seconds, :runner_name,
+                         :runner_labels, :runner_group_name, :created_at)
                     ON CONFLICT (github_job_id) DO UPDATE SET
                         status = EXCLUDED.status,
                         conclusion = EXCLUDED.conclusion,
                         started_at = EXCLUDED.started_at,
                         completed_at = EXCLUDED.completed_at,
                         duration_seconds = EXCLUDED.duration_seconds,
-                        runner_name = EXCLUDED.runner_name
+                        runner_name = EXCLUDED.runner_name,
+                        runner_labels = EXCLUDED.runner_labels,
+                        runner_group_name = EXCLUDED.runner_group_name
                     RETURNING id
                     """
                 ),
@@ -106,6 +116,8 @@ def sync_job_timings_task(self, message: dict) -> dict:
                     "completed_at": completed,
                     "duration_seconds": duration,
                     "runner_name": gh_job.get("runner_name"),
+                    "runner_labels": gh_job.get("labels") or None,
+                    "runner_group_name": gh_job.get("runner_group_name"),
                     "created_at": now,
                 },
             ).fetchone()

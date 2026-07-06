@@ -105,21 +105,24 @@ _TOOL_CONFIG = {
                     "workflow — a graph traversal, not text search. Use this when the question is "
                     "about what's structurally connected to a workflow (what it depends on, what "
                     "depends on it, what governance rules or failure history are already linked "
-                    "to it), rather than semantic search over remediation text."
+                    "to it), rather than semantic search over remediation text. workflow_file can "
+                    "be the colloquial name the user said (e.g. \"ci-auth-service\") -- it's matched "
+                    "fuzzily server-side, you never need the exact .github/workflows/... path. "
+                    "Omit repo_name unless the question specifies one."
                 ),
                 "inputSchema": {
                     "json": {
                         "type": "object",
                         "properties": {
-                            "repo_name": {"type": "string"},
-                            "workflow_file": {"type": "string"},
+                            "repo_name": {"type": "string", "description": "Optional -- omit if not specified in the question"},
+                            "workflow_file": {"type": "string", "description": "Exact path or just a colloquial/partial name -- fuzzy-matched"},
                             "relationship": {
                                 "type": "string",
                                 "enum": ["depends_on", "depended_on_by", "governance", "failures"],
                                 "description": "Which structural relationship to look up, default depends_on",
                             },
                         },
-                        "required": ["repo_name", "workflow_file"],
+                        "required": ["workflow_file"],
                     }
                 },
             }
