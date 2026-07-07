@@ -261,6 +261,9 @@ class GitHubRemediationClient:
     def add_pr_labels(self, owner: str, repo: str, pr_number: int, labels: list[str]) -> None:
         self._post(f"/repos/{owner}/{repo}/issues/{pr_number}/labels", json={"labels": labels})
 
+    def get_code_scanning_alert(self, owner: str, repo: str, alert_number: int) -> dict:
+        return self._get(f"/repos/{owner}/{repo}/code-scanning/alerts/{alert_number}")
+
     def dispatch_workflow(
         self, owner: str, repo: str, workflow_file: str, ref: str, inputs: dict | None = None
     ) -> None:
