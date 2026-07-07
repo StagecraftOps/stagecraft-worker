@@ -941,70 +941,151 @@ def _set_org_sync_status(session: Session, org_login: str, status_value: str) ->
     )
     session.commit()
 
+def _get_org_id(session: Session, org_login: str) -> str | None:
+    row = session.execute(
+        text("SELECT id FROM organizations WHERE login = :login"), {"login": org_login}
+    ).fetchone()
+    return str(row[0]) if row else None
+
+def _get_active_repo_names(session: Session, org_id: str) -> set[str] | None:
+    """None means no scope has been configured -- treat every repo as active
+    (keeps existing orgs, which predate the Select Scope step, working as before)."""
+    rows = session.execute(
+        text("SELECT repo_name FROM org_repo_scope WHERE org_id = :org_id AND is_active = true"),
+        {"org_id": org_id},
+    ).fetchall()
+    if not rows:
+        return None
+    return {r[0] for r in rows}
+
+def _set_repo_progress(
+    session: Session,
+    org_id: str,
+    repo_name: str,
+    status_value: str,
+    runs_synced: int = 0,
+    error: str | None = None,
+) -> None:
+    import uuid as _uuid
+
+    session.execute(
+        text(
+            """
+            INSERT INTO org_sync_progress (id, org_id, repo_name, status, runs_synced, error, updated_at)
+            VALUES (:id, :org_id, :repo_name, :status, :runs_synced, :error, now())
+            ON CONFLICT (org_id, repo_name) DO UPDATE
+              SET status = EXCLUDED.status,
+                  runs_synced = EXCLUDED.runs_synced,
+                  error = EXCLUDED.error,
+                  updated_at = now()
+            """
+        ),
+        {
+            "id": str(_uuid.uuid4()),
+            "org_id": org_id,
+            "repo_name": repo_name,
+            "status": status_value,
+            "runs_synced": runs_synced,
+            "error": error,
+        },
+    )
+    session.commit()
+
 @app.task(bind=True, max_retries=2, default_retry_delay=120)
 def backfill_org_runs_task(self, org_login: str) -> dict:
     session = SyncSessionLocal()
     github: GitHubRemediationClient | None = None
     synced = 0
+    failed_repos: list[str] = []
 
     try:
         _set_org_sync_status(session, org_login, "syncing")
+        org_id = _get_org_id(session, org_login)
         github_token = _get_github_token_for_org(session, org_login)
         github = GitHubRemediationClient(github_token)
 
         repos = github.get_org_repos(org_login)
+        active_repo_names = _get_active_repo_names(session, org_id) if org_id else None
+        if active_repo_names is not None:
+            repos = [r for r in repos if r["name"] in active_repo_names]
+
         for repo in repos:
             repo_name = repo["name"]
             page = 1
             repo_synced = 0
+            if org_id:
+                _set_repo_progress(session, org_id, repo_name, "syncing")
 
-            while repo_synced < _BACKFILL_MAX_RUNS_PER_REPO:
-                runs, rate_limit_remaining = github.get_repo_runs(
-                    org_login, repo_name, per_page=100, page=page
-                )
-                if not runs:
-                    break
-
-                for run in runs:
-                    msg = {
-                        "repo_owner": org_login,
-                        "repo_name": repo_name,
-                        "run_id": run["id"],
-                        "workflow_id": run.get("workflow_id"),
-                        "workflow_name": run.get("name", ""),
-                        "workflow_file": run.get("path", ""),
-                        "branch": run.get("head_branch", ""),
-                        "head_sha": run.get("head_sha", ""),
-                        "status": run.get("status"),
-                        "conclusion": run.get("conclusion"),
-                        "started_at": run.get("run_started_at"),
-                        "completed_at": run.get("updated_at")
-                        if run.get("status") == "completed"
-                        else None,
-                        "html_url": run.get("html_url"),
-                    }
-                    _upsert_workflow_run(session, msg)
-                    repo_synced += 1
-                    synced += 1
-                    if repo_synced >= _BACKFILL_MAX_RUNS_PER_REPO:
+            try:
+                while repo_synced < _BACKFILL_MAX_RUNS_PER_REPO:
+                    runs, rate_limit_remaining = github.get_repo_runs(
+                        org_login, repo_name, per_page=100, page=page
+                    )
+                    if not runs:
                         break
 
-                if len(runs) < 100:
-                    break
-                page += 1
+                    for run in runs:
+                        msg = {
+                            "repo_owner": org_login,
+                            "repo_name": repo_name,
+                            "run_id": run["id"],
+                            "workflow_id": run.get("workflow_id"),
+                            "workflow_name": run.get("name", ""),
+                            "workflow_file": run.get("path", ""),
+                            "branch": run.get("head_branch", ""),
+                            "head_sha": run.get("head_sha", ""),
+                            "status": run.get("status"),
+                            "conclusion": run.get("conclusion"),
+                            "started_at": run.get("run_started_at"),
+                            "completed_at": run.get("updated_at")
+                            if run.get("status") == "completed"
+                            else None,
+                            "html_url": run.get("html_url"),
+                        }
+                        _upsert_workflow_run(session, msg)
+                        repo_synced += 1
+                        synced += 1
+                        if repo_synced >= _BACKFILL_MAX_RUNS_PER_REPO:
+                            break
 
-                if (
-                    rate_limit_remaining is not None
-                    and rate_limit_remaining < _BACKFILL_LOW_RATE_LIMIT_THRESHOLD
-                ):
-                    logger.warning("Rate limit low (%s), pausing backfill", rate_limit_remaining)
-                    time.sleep(5)
+                    if len(runs) < 100:
+                        break
+                    page += 1
+
+                    if (
+                        rate_limit_remaining is not None
+                        and rate_limit_remaining < _BACKFILL_LOW_RATE_LIMIT_THRESHOLD
+                    ):
+                        logger.warning("Rate limit low (%s), pausing backfill", rate_limit_remaining)
+                        time.sleep(5)
+
+                if org_id:
+                    _set_repo_progress(session, org_id, repo_name, "completed", repo_synced)
+
+            except Exception as repo_exc:
+                logger.exception("Backfill failed for %s/%s: %s", org_login, repo_name, repo_exc)
+                session.rollback()
+                failed_repos.append(repo_name)
+                if org_id:
+                    _set_repo_progress(
+                        session, org_id, repo_name, "failed", repo_synced, str(repo_exc)[:2000]
+                    )
+                continue
 
             time.sleep(0.5)
 
-        _set_org_sync_status(session, org_login, "completed")
-        logger.info("Backfill completed for %s: %s runs", org_login, synced)
-        return {"status": "completed", "org_login": org_login, "synced": synced}
+        final_status = "completed_with_errors" if failed_repos else "completed"
+        _set_org_sync_status(session, org_login, final_status)
+        logger.info(
+            "Backfill %s for %s: %s runs, %s repos failed",
+            final_status, org_login, synced, len(failed_repos),
+        )
+        return {
+            "status": final_status,
+            "org_login": org_login,
+            "synced": synced,
+            "failed_repos": failed_repos,
+        }
 
     except Exception as exc:
         logger.exception("Backfill failed for %s: %s", org_login, exc)
@@ -1028,43 +1109,62 @@ def register_app_installation_task(self, message: dict) -> dict:
     org_id = message.get("org_id")
     installation_id = message.get("installation_id")
     avatar_url = message.get("avatar_url")
+    sender_id = message.get("sender_id")
+    sender_login = message.get("sender_login")
 
     session = SyncSessionLocal()
     try:
         if action == "created":
-            user_row = session.execute(
-                text("SELECT id FROM users ORDER BY created_at LIMIT 1")
-            ).fetchone()
-            owner_id = str(user_row[0]) if user_row else None
+            owner_id = None
+            if sender_id is not None:
+                user_row = session.execute(
+                    text("SELECT id FROM users WHERE github_id = :github_id"),
+                    {"github_id": sender_id},
+                ).fetchone()
+                owner_id = str(user_row[0]) if user_row else None
 
-            if owner_id:
-                session.execute(
-                    text(
-                        """
-                        INSERT INTO organizations
-                          (id, github_org_id, login, avatar_url, webhook_secret,
-                           installation_id, sync_status, owner_id, created_at)
-                        VALUES
-                          (:id, :github_org_id, :login, :avatar_url, '',
-                           :installation_id, 'pending', :owner_id, now())
-                        ON CONFLICT (login) DO UPDATE
-                          SET installation_id = EXCLUDED.installation_id,
-                              avatar_url = EXCLUDED.avatar_url
-                        """
-                    ),
-                    {
-                        "id": str(_uuid.uuid4()),
-                        "github_org_id": org_id,
-                        "login": org_login,
-                        "avatar_url": avatar_url,
-                        "installation_id": installation_id,
-                        "owner_id": owner_id,
-                    },
+            if owner_id is None:
+                logger.warning(
+                    "Install sender %s (github_id=%s) has no matching StageCraft "
+                    "user for org %s; org will be unclaimed until they log in.",
+                    sender_login, sender_id, org_login,
                 )
-                session.commit()
-                logger.info("Registered App installation %s for org %s", installation_id, org_login)
+
+            session.execute(
+                text(
+                    """
+                    INSERT INTO organizations
+                      (id, github_org_id, login, avatar_url, webhook_secret,
+                       installation_id, sync_status, owner_id,
+                       installed_by_github_id, installed_by_login, created_at)
+                    VALUES
+                      (:id, :github_org_id, :login, :avatar_url, '',
+                       :installation_id, 'pending', :owner_id,
+                       :sender_id, :sender_login, now())
+                    ON CONFLICT (login) DO UPDATE
+                      SET installation_id = EXCLUDED.installation_id,
+                          avatar_url = EXCLUDED.avatar_url,
+                          owner_id = COALESCE(organizations.owner_id, EXCLUDED.owner_id),
+                          installed_by_github_id = EXCLUDED.installed_by_github_id,
+                          installed_by_login = EXCLUDED.installed_by_login
+                    """
+                ),
+                {
+                    "id": str(_uuid.uuid4()),
+                    "github_org_id": org_id,
+                    "login": org_login,
+                    "avatar_url": avatar_url,
+                    "installation_id": installation_id,
+                    "owner_id": owner_id,
+                    "sender_id": sender_id,
+                    "sender_login": sender_login,
+                },
+            )
+            session.commit()
+            logger.info("Registered App installation %s for org %s", installation_id, org_login)
+            if owner_id is not None:
                 backfill_org_runs_task.delay(org_login)
-            return {"status": "registered", "org_login": org_login}
+            return {"status": "registered" if owner_id else "unclaimed", "org_login": org_login}
 
         elif action == "deleted":
             session.execute(
