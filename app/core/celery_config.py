@@ -33,6 +33,8 @@ task_routes = {
     "app.tasks.knowledge_graph.build_knowledge_graph_task": {"queue": "remediation"},
     "app.tasks.drift_detection.run_drift_detection_task": {"queue": "remediation"},
     "app.tasks.vulnerability.run_vulnerability_remediation_task": {"queue": "remediation"},
+    "app.tasks.vulnerability_remediation.run_vulnerability_dependency_fix_task": {"queue": "remediation"},
+    "app.tasks.vulnerability_remediation.publish_vulnerability_agent_task": {"queue": "remediation"},
 }
 
 task_acks_late = True

@@ -9,6 +9,7 @@ app = Celery(
         "app.tasks.standardization",
         "app.tasks.drift_detection",
         "app.tasks.vulnerability",
+        "app.tasks.vulnerability_remediation",
         "app.tasks.pr_review",
         "app.tasks.governance",
         "app.tasks.optimization",

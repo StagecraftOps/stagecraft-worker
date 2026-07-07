@@ -209,6 +209,10 @@ class GitHubRemediationClient:
             },
         )
 
+    def get_default_branch(self, owner: str, repo: str) -> str:
+        data = self._get(f"/repos/{owner}/{repo}")
+        return data.get("default_branch", "main") if isinstance(data, dict) else "main"
+
     def get_branch_sha(self, owner: str, repo: str, branch: str) -> str | None:
         try:
             data = self._get(f"/repos/{owner}/{repo}/git/ref/heads/{branch}")
@@ -225,12 +229,23 @@ class GitHubRemediationClient:
         return results.get("items", []) if isinstance(results, dict) else []
 
     def find_issue_by_marker(self, owner: str, repo: str, marker: str) -> dict | None:
-        results = self._get(
-            "/search/issues",
-            params={"q": f'repo:{owner}/{repo} type:issue in:body "{marker}"'},
-        )
-        items = results.get("items", []) if isinstance(results, dict) else []
-        return items[0] if items else None
+        # The /search/issues endpoint returns 403 for GitHub App installation
+        # tokens (search has separate, stricter auth requirements than the
+        # regular REST API). List issues instead and scan bodies client-side --
+        # capped at a few pages since this is a dedup check, not a full audit.
+        for page in range(1, 4):
+            issues = self._get(
+                f"/repos/{owner}/{repo}/issues",
+                params={"state": "all", "per_page": 100, "page": page, "labels": "security"},
+            )
+            if not isinstance(issues, list) or not issues:
+                break
+            for issue in issues:
+                if marker in (issue.get("body") or ""):
+                    return issue
+            if len(issues) < 100:
+                break
+        return None
 
     def create_issue(
         self, owner: str, repo: str, title: str, body: str, labels: list[str] | None = None
