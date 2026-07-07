@@ -28,11 +28,13 @@ def record_agent_run(
         text(
             """
             INSERT INTO agent_runs
-                (id, org_login, repo_name, agent_name, github_run_id, outcome, summary,
+                (id, org_login, repo_name, application_id, agent_name, github_run_id, outcome, summary,
                  gaps_found, prs_opened, artifacts, conditions_evaluated, evidence,
                  created_at, updated_at)
             VALUES
-                (:id, :org_login, :repo_name, :agent_name, :github_run_id, :outcome, :summary,
+                (:id, :org_login, :repo_name,
+                 (SELECT application_id FROM application_repos WHERE org_login = :org_login AND repo_name = :repo_name),
+                 :agent_name, :github_run_id, :outcome, :summary,
                  :gaps_found, :prs_opened, :artifacts,
                  CAST(:conditions_evaluated AS jsonb), CAST(:evidence AS jsonb),
                  :created_at, :updated_at)

@@ -315,6 +315,17 @@ def _parse_timestamp(value: str | None) -> datetime | None:
     except ValueError:
         return None
 
+def _resolve_application_id(session: Session, org_login: str, repo_name: str | None) -> str | None:
+    """Map a repo to its owning application (if assigned), so new rows are
+    correctly attributed for per-application isolation."""
+    if not repo_name:
+        return None
+    row = session.execute(
+        text("SELECT application_id FROM application_repos WHERE org_login = :org AND repo_name = :repo"),
+        {"org": org_login, "repo": repo_name},
+    ).fetchone()
+    return str(row[0]) if row and row[0] else None
+
 def _upsert_workflow_run(session: Session, message: dict) -> uuid.UUID:
     run_id = message["run_id"]
     status_value = message.get("status") or "queued"
@@ -331,17 +342,18 @@ def _upsert_workflow_run(session: Session, message: dict) -> uuid.UUID:
         text(
             """
             INSERT INTO workflow_runs (
-                id, github_run_id, github_workflow_id, org_login, repo_name,
+                id, github_run_id, github_workflow_id, org_login, repo_name, application_id,
                 workflow_name, workflow_file, branch, head_sha,
                 status, conclusion, started_at, completed_at, html_url,
                 created_at, updated_at
             ) VALUES (
-                :id, :run_id, :workflow_id, :org_login, :repo_name,
+                :id, :run_id, :workflow_id, :org_login, :repo_name, :application_id,
                 :workflow_name, :workflow_file, :branch, :head_sha,
                 :status, :conclusion, :started_at, :completed_at, :html_url,
                 :created_at, :updated_at
             )
             ON CONFLICT (github_run_id) DO UPDATE SET
+                application_id = COALESCE(EXCLUDED.application_id, workflow_runs.application_id),
                 -- Only advance status forward: queued < in_progress < completed.
                 -- A late out-of-order SQS delivery must NEVER regress a
                 -- completed run back to queued or in_progress.
@@ -374,6 +386,7 @@ def _upsert_workflow_run(session: Session, message: dict) -> uuid.UUID:
             "workflow_id": message.get("workflow_id", 0),
             "org_login": message["repo_owner"],
             "repo_name": message["repo_name"],
+            "application_id": _resolve_application_id(session, message["repo_owner"], message["repo_name"]),
             "workflow_name": message.get("workflow_name", ""),
             "workflow_file": message.get("workflow_file", ""),
             "branch": message.get("branch", ""),
@@ -402,11 +415,11 @@ def _create_remediation_record(
         text(
             """
             INSERT INTO remediations (
-                id, workflow_run_id, org_login, repo_name, workflow_file,
+                id, workflow_run_id, org_login, repo_name, application_id, workflow_file,
                 root_cause, fixed_yaml, suggested_yaml,
                 bedrock_model, status, created_at, updated_at
             ) VALUES (
-                :id, :workflow_run_id, :org_login, :repo_name, :workflow_file,
+                :id, :workflow_run_id, :org_login, :repo_name, :application_id, :workflow_file,
                 '', '', NULL,
                 :bedrock_model, :status, :created_at, :updated_at
             )
@@ -417,6 +430,7 @@ def _create_remediation_record(
             "workflow_run_id": str(workflow_run_id),
             "org_login": message["repo_owner"],
             "repo_name": message["repo_name"],
+            "application_id": _resolve_application_id(session, message["repo_owner"], message["repo_name"]),
             "workflow_file": message.get("workflow_file", ""),
             "bedrock_model": settings.BEDROCK_MODEL_ID,
             "status": status,

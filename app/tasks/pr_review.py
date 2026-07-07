@@ -28,9 +28,11 @@ def process_pull_request(self, message: dict) -> dict:
             text(
                 """
                 INSERT INTO pr_reviews
-                    (id, org_login, repo_name, pr_number, pr_url, status, created_at, updated_at)
+                    (id, org_login, repo_name, application_id, pr_number, pr_url, status, created_at, updated_at)
                 VALUES
-                    (:id, :org_login, :repo_name, :pr_number, :pr_url, 'analyzing', :now, :now)
+                    (:id, :org_login, :repo_name,
+                     (SELECT application_id FROM application_repos WHERE org_login = :org_login AND repo_name = :repo_name),
+                     :pr_number, :pr_url, 'analyzing', :now, :now)
                 """
             ),
             {
