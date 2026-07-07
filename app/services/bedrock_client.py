@@ -301,16 +301,21 @@ Analyze the failure and provide a fix. Respond with ONLY valid JSON in this exac
                 raise
         raise RuntimeError("correct_yaml_syntax: Bedrock invocation failed after retries")
 
-    def _invoke_json(self, prompt: str, required_keys: set[str], max_tokens: int = 2048) -> dict:
+    def _invoke_json(
+        self, prompt: str, required_keys: set[str], max_tokens: int = 2048, system_prompt: str | None = None
+    ) -> dict:
         max_retries = 2
         last_exception: Exception | None = None
         for attempt in range(max_retries + 1):
             try:
-                response = self._client.converse(
-                    modelId=self._model_id,
-                    messages=[{"role": "user", "content": [{"text": prompt}]}],
-                    inferenceConfig={"maxTokens": max_tokens},
-                )
+                kwargs: dict = {
+                    "modelId": self._model_id,
+                    "messages": [{"role": "user", "content": [{"text": prompt}]}],
+                    "inferenceConfig": {"maxTokens": max_tokens},
+                }
+                if system_prompt:
+                    kwargs["system"] = [{"text": system_prompt}]
+                response = self._client.converse(**kwargs)
                 raw_text: str = response["output"]["message"]["content"][0]["text"].strip()
                 raw_text = re.sub(r"^```(?:json)?\s*", "", raw_text, flags=re.MULTILINE)
                 raw_text = re.sub(r"\s*```$", "", raw_text, flags=re.MULTILINE)
@@ -368,6 +373,39 @@ Blast radius: {blast_radius.get('affected_repos', [])} repos, {blast_radius.get(
 In 3-4 sentences, explain what this finding means in practice for this application, why the severity is what it is given the context above, and what's at stake if left unaddressed. Respond with ONLY valid JSON in this exact format: {{"summary": "..."}}"""
         result = self._invoke_json(prompt, required_keys={"summary"}, max_tokens=512)
         return result["summary"]
+
+    def plan_dependency_fix(
+        self,
+        finding: dict,
+        order_summary: str,
+        system_prompt: str | None,
+        skill_context: str,
+    ) -> dict:
+        """Used by the Vulnerability Remediation custom agent: decides whether to
+        proceed with a dependency-ordered fix PR (honoring any user-authored
+        skill-file constraints) and writes the PR title/body. system_prompt and
+        skill_context both come from the user-editable CustomAgentConfig."""
+        default_system = (
+            "You are the Vulnerability Remediation agent for StageCraft, a CI/CD governance "
+            "platform. You raise dependency-ordered fix PRs for vulnerable packages. Respect "
+            "any constraints given to you below and never fabricate vulnerability details -- "
+            "only use the structured evidence provided in the user message."
+        )
+        system = f"{default_system}\n\n{system_prompt}" if system_prompt else default_system
+        if skill_context:
+            system += f"\n\n## Skill files (repo/org-specific instructions)\n{skill_context}"
+
+        prompt = f"""A dependency-ordered fix is about to be raised for this vulnerable package:
+
+Package: {finding.get('package_name')}
+Fixed version: {finding.get('fixed_version')}
+Manifest: {finding.get('manifest_path')}
+Severity: {finding.get('severity')}
+Fix order computed (most foundational first): {order_summary}
+
+Given any constraints in your skill files, decide whether to proceed. Respond with ONLY valid JSON:
+{{"proceed": true or false, "skip_reason": "empty string if proceeding, else why you're skipping", "pr_title": "fix: ...", "pr_body": "1-3 sentence rationale for the fix, referencing the dependency order"}}"""
+        return self._invoke_json(prompt, required_keys={"proceed", "pr_title", "pr_body"}, max_tokens=768, system_prompt=system)
 
     def judge_pattern_cluster(self, candidate_jobs: list[dict], min_occurrences: int) -> dict | None:
         jobs_desc = "\n".join(
