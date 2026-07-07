@@ -261,5 +261,14 @@ class GitHubRemediationClient:
     def add_pr_labels(self, owner: str, repo: str, pr_number: int, labels: list[str]) -> None:
         self._post(f"/repos/{owner}/{repo}/issues/{pr_number}/labels", json={"labels": labels})
 
+    def dispatch_workflow(
+        self, owner: str, repo: str, workflow_file: str, ref: str, inputs: dict | None = None
+    ) -> None:
+        response = self._client.post(
+            f"/repos/{owner}/{repo}/actions/workflows/{workflow_file}/dispatches",
+            json={"ref": ref, "inputs": inputs or {}},
+        )
+        response.raise_for_status()
+
     def close(self) -> None:
         self._client.close()

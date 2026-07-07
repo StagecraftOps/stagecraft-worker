@@ -22,6 +22,7 @@ from app.tasks.drift_detection import run_drift_detection_task
 from app.tasks.vulnerability import run_vulnerability_remediation_task
 from app.tasks.vulnerability_remediation import (
     publish_vulnerability_agent_task,
+    run_agentic_remediation_task,
     run_vulnerability_dependency_fix_task,
 )
 
@@ -75,6 +76,10 @@ def _dispatch(message: dict) -> None:
 
     if event_type == "publish_vulnerability_agent":
         publish_vulnerability_agent_task.delay(message)
+        return
+
+    if event_type == "run_agentic_remediation":
+        run_agentic_remediation_task.delay(message)
         return
 
     if event_type == "pull_request":

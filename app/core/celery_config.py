@@ -35,6 +35,7 @@ task_routes = {
     "app.tasks.vulnerability.run_vulnerability_remediation_task": {"queue": "remediation"},
     "app.tasks.vulnerability_remediation.run_vulnerability_dependency_fix_task": {"queue": "remediation"},
     "app.tasks.vulnerability_remediation.publish_vulnerability_agent_task": {"queue": "remediation"},
+    "app.tasks.vulnerability_remediation.run_agentic_remediation_task": {"queue": "remediation"},
 }
 
 task_acks_late = True
