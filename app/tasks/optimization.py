@@ -192,10 +192,10 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
                     """
                     INSERT INTO optimization_recommendations
                         (id, org_login, repo_name, workflow_file, graph_id, recommendation_type,
-                         description, proposed_yaml_diff, estimated_time_savings_seconds,
+                         description, original_yaml, proposed_yaml_diff, estimated_time_savings_seconds,
                          confidence_score, status, agent_trace, created_at, updated_at)
                     VALUES
-                        (:id, :org, :repo, :wf, :graph_id, :rtype, :description, :diff,
+                        (:id, :org, :repo, :wf, :graph_id, :rtype, :description, :original, :diff,
                          :savings, :confidence, 'proposed', :trace, :now, :now)
                     """
                 ),
@@ -207,6 +207,7 @@ def run_optimization_analysis_task(self, message: dict) -> dict:
                     "graph_id": str(graph_id),
                     "rtype": rec.get("type", "reorder"),
                     "description": rec.get("description", ""),
+                    "original": workflow_yaml,
                     "diff": final_state.get("draft_future_yaml"),
                     "savings": rec.get("estimated_time_savings_seconds", 0),
                     "confidence": rec.get("confidence_score", 0),
