@@ -22,6 +22,7 @@ task_routes = {
     "app.tasks.remediation.backfill_org_runs_task": {"queue": "remediation"},
     "app.tasks.remediation.register_app_installation_task": {"queue": "remediation"},
     "app.tasks.remediation.backfill_embeddings_task": {"queue": "remediation"},
+    "app.tasks.remediation.run_code_level_fix_task": {"queue": "remediation"},
     "app.tasks.dependency_graph.build_dependency_graph_task": {"queue": "remediation"},
     "app.tasks.job_timing.sync_job_timings_task": {"queue": "remediation"},
     "app.tasks.standardization.run_template_diff_task": {"queue": "remediation"},

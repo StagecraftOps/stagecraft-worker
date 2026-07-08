@@ -821,6 +821,17 @@ def process_failed_workflow(self, message: dict) -> dict:
             session.commit()
             if failure_category:
                 enqueue_knowledge_graph_rebuild(repo_owner)
+            if likely_code_level:
+                run_code_level_fix_task.delay({
+                    "org_login": repo_owner,
+                    "repo_name": repo_name,
+                    "workflow_name": workflow_name,
+                    "workflow_file": workflow_file,
+                    "root_cause": root_cause,
+                    "code_level_reasoning": code_level_reasoning,
+                    "failure_category": failure_category,
+                    "logs": scrubbed_logs,
+                })
             return {"status": "failed", "remediation_id": str(remediation_id)}
 
         _update_remediation(
@@ -902,6 +913,106 @@ def process_failed_workflow(self, message: dict) -> dict:
 
         raise self.retry(exc=exc)
 
+    finally:
+        session.close()
+        if github:
+            github.close()
+
+def _build_failure_brief(
+    org_login: str, repo_name: str, workflow_name: str, workflow_file: str,
+    root_cause: str, code_level_reasoning: str | None, failure_category: str | None,
+    logs: str, app_context: dict | None,
+) -> str:
+    """Brief for claude-code-action when the Self-Healing RCA agent has
+    already determined a failure's root cause is in the application's own
+    source, not the pipeline YAML -- gives the agent a starting point (the
+    RCA analysis + a log excerpt), then lets it explore the actual checked-
+    out repo to find and fix the real code."""
+    lines = [
+        f"# StageCraft Failure Brief -- {org_login}/{repo_name}",
+        "",
+        f"## Failed workflow: {workflow_name} ({workflow_file})",
+        "",
+        "## Root cause (from automated analysis)",
+        "",
+        root_cause or "Not determined.",
+        "",
+    ]
+    if code_level_reasoning:
+        lines += ["## Why this is a code-level issue, not a pipeline config issue", "", code_level_reasoning, ""]
+    if failure_category:
+        lines += [f"Failure category: {failure_category}", ""]
+    if app_context:
+        lines += [
+            "## Application Context",
+            "",
+            f"- Risk tier: {app_context.get('risk_tier') or 'unknown'}",
+            f"- Regulatory scope: {', '.join(app_context.get('regulatory_scope') or []) or 'none'}",
+            f"- Data classification: {app_context.get('data_classification') or 'unknown'}",
+            "",
+        ]
+    if logs:
+        lines += ["## Relevant log excerpt", "", "```", logs[-4000:], "```", ""]
+    lines += [
+        "## Instructions",
+        "",
+        "This is NOT a pipeline/workflow-config issue -- the fix is in the application's own "
+        "source code. Explore the repository to find the actual root cause (the log excerpt above "
+        "is a starting point, not the full picture), make the minimal correct fix, and open a PR.",
+    ]
+    return "\n".join(lines)
+
+@app.task(bind=True, max_retries=1, default_retry_delay=30)
+def run_code_level_fix_task(self, message: dict) -> dict:
+    from app.tasks.vulnerability_remediation import _BRIEF_PATH, _REMEDIATION_AGENT_WORKFLOW_PATH
+
+    org_login = message["org_login"]
+    repo_name = message["repo_name"]
+
+    session = SyncSessionLocal()
+    github: GitHubRemediationClient | None = None
+    try:
+        github_token = _get_github_token_for_org(session, org_login)
+        github = GitHubRemediationClient(github_token)
+        default_branch = github.get_default_branch(org_login, repo_name)
+
+        if not github.get_file_sha(org_login, repo_name, _REMEDIATION_AGENT_WORKFLOW_PATH, default_branch):
+            record_agent_run(
+                session, org_login=org_login, repo_name=repo_name, agent_name="failure_rca",
+                outcome="needs_review",
+                summary="Code-level root cause found, but the remediation agent isn't deployed to this "
+                        "repo yet -- publish it from the Vulnerability Remediation page first.",
+            )
+            session.commit()
+            return {"status": "not_deployed"}
+
+        app_context = _load_app_context(session, org_login, repo_name)
+        brief = _build_failure_brief(
+            org_login, repo_name, message.get("workflow_name", ""), message.get("workflow_file", ""),
+            message.get("root_cause", ""), message.get("code_level_reasoning"),
+            message.get("failure_category"), message.get("logs", ""), app_context,
+        )
+        brief_sha = github.get_file_sha(org_login, repo_name, _BRIEF_PATH, default_branch)
+        github.commit_fix(
+            org_login, repo_name, default_branch, _BRIEF_PATH, brief,
+            "chore: update StageCraft failure brief", brief_sha,
+        )
+        github.dispatch_workflow(
+            org_login, repo_name, "stagecraft-remediation-agent.yml", default_branch,
+            {"brief_path": _BRIEF_PATH},
+        )
+
+        record_agent_run(
+            session, org_login=org_login, repo_name=repo_name, agent_name="failure_rca",
+            outcome="dispatched",
+            summary=f"Dispatched claude-code-action to fix a code-level failure in {repo_name}: "
+                    f"{message.get('root_cause', '')[:200]}",
+        )
+        session.commit()
+        return {"status": "dispatched"}
+    except Exception as exc:
+        logger.exception("run_code_level_fix_task failed for %s/%s: %s", org_login, repo_name, exc)
+        raise self.retry(exc=exc)
     finally:
         session.close()
         if github:
