@@ -23,6 +23,7 @@ from app.tasks.vulnerability import backfill_finding_package_names_task, run_vul
 from app.tasks.vulnerability_remediation import (
     publish_vulnerability_agent_task,
     run_agentic_remediation_task,
+    run_copilot_remediation_task,
     run_vulnerability_dependency_fix_task,
 )
 
@@ -80,6 +81,10 @@ def _dispatch(message: dict) -> None:
 
     if event_type == "run_agentic_remediation":
         run_agentic_remediation_task.delay(message)
+        return
+
+    if event_type == "run_copilot_remediation":
+        run_copilot_remediation_task.delay(message)
         return
 
     if event_type == "backfill_finding_package_names":

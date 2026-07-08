@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     BEDROCK_API_KEY: str = ""
 
     GITHUB_TOKEN: str = ""
+    COPILOT_PAT: str = ""
 
     GITHUB_APP_ID: str = ""
     GITHUB_APP_PRIVATE_KEY: str = ""

@@ -36,6 +36,8 @@ task_routes = {
     "app.tasks.vulnerability_remediation.run_vulnerability_dependency_fix_task": {"queue": "remediation"},
     "app.tasks.vulnerability_remediation.publish_vulnerability_agent_task": {"queue": "remediation"},
     "app.tasks.vulnerability_remediation.run_agentic_remediation_task": {"queue": "remediation"},
+    "app.tasks.vulnerability_remediation.run_copilot_remediation_task": {"queue": "remediation"},
+    "app.tasks.vulnerability_remediation.poll_copilot_task_result": {"queue": "remediation"},
     "app.tasks.vulnerability.backfill_finding_package_names_task": {"queue": "remediation"},
 }
 
