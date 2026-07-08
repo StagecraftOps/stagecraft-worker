@@ -4,7 +4,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import InvalidToken
 from sqlalchemy import create_engine, text
@@ -627,6 +627,29 @@ def upsert_workflow_run_task(self, message: dict) -> dict:
     finally:
         session.close()
 
+_STAGECRAFT_BOT_LOGIN = "stagecraftops[bot]"
+_CODE_LEVEL_FIX_COOLDOWN_MINUTES = 15
+
+def _recently_dispatched_code_level_fix(session: Session, org_login: str, repo_name: str) -> bool:
+    """Second, independent guard against the brief-commit re-trigger loop --
+    even if sender_login isn't populated for some event shape, don't dispatch
+    another code-level fix for the same repo within the cooldown window."""
+    row = session.execute(
+        text(
+            """
+            SELECT 1 FROM agent_runs
+            WHERE org_login = :org AND repo_name = :repo AND agent_name = 'failure_rca'
+              AND outcome = 'dispatched' AND created_at > :since
+            LIMIT 1
+            """
+        ),
+        {
+            "org": org_login, "repo": repo_name,
+            "since": datetime.now(timezone.utc) - timedelta(minutes=_CODE_LEVEL_FIX_COOLDOWN_MINUTES),
+        },
+    ).fetchone()
+    return row is not None
+
 @app.task(bind=True, max_retries=3, default_retry_delay=60)
 def process_failed_workflow(self, message: dict) -> dict:
     repo_owner: str = message["repo_owner"]
@@ -636,8 +659,22 @@ def process_failed_workflow(self, message: dict) -> dict:
     head_sha: str = message.get("head_sha", "")
     workflow_name: str = message.get("workflow_name", "")
     branch: str = message.get("branch", "")
+    sender_login: str = message.get("sender_login", "")
 
     logger.info("Analyzing failed workflow run %s for %s/%s", run_id, repo_owner, repo_name)
+
+    if sender_login == _STAGECRAFT_BOT_LOGIN:
+        # A failure caused by our own bot's commit (e.g. committing an updated
+        # BRIEF.md, which is itself a push and re-triggers CI) isn't new
+        # information -- it's the same still-unfixed bug re-announcing itself.
+        # Without this guard, dispatching a fresh fix attempt here creates an
+        # unbounded loop: brief commit -> CI re-runs -> fails -> dispatch ->
+        # brief commit -> ... (this happened for real; see incident notes).
+        logger.info(
+            "Skipping analysis for run %s in %s/%s -- triggered by our own bot (%s), not a new failure",
+            run_id, repo_owner, repo_name, sender_login,
+        )
+        return {"status": "skipped_own_bot"}
 
     session = SyncSessionLocal()
     github: GitHubRemediationClient | None = None
@@ -822,7 +859,7 @@ def process_failed_workflow(self, message: dict) -> dict:
             session.commit()
             if failure_category:
                 enqueue_knowledge_graph_rebuild(repo_owner)
-            if likely_code_level:
+            if likely_code_level and not _recently_dispatched_code_level_fix(session, repo_owner, repo_name):
                 run_code_level_fix_task.delay({
                     "org_login": repo_owner,
                     "repo_name": repo_name,
