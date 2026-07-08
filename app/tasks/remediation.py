@@ -635,6 +635,7 @@ def process_failed_workflow(self, message: dict) -> dict:
     workflow_file: str = message.get("workflow_file", "")
     head_sha: str = message.get("head_sha", "")
     workflow_name: str = message.get("workflow_name", "")
+    branch: str = message.get("branch", "")
 
     logger.info("Analyzing failed workflow run %s for %s/%s", run_id, repo_owner, repo_name)
 
@@ -831,6 +832,7 @@ def process_failed_workflow(self, message: dict) -> dict:
                     "code_level_reasoning": code_level_reasoning,
                     "failure_category": failure_category,
                     "logs": scrubbed_logs,
+                    "branch": branch,
                 })
             return {"status": "failed", "remediation_id": str(remediation_id)}
 
